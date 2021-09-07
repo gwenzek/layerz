@@ -12,13 +12,13 @@ const InputEventVal = enum {
 };
 
 fn read_event(event: *InputEvent) bool {
-    const buffer = @ptrCast(*[@sizeOf(InputEvent)]u8, event);
+    const buffer = std.mem.asBytes(event);
     const ret = io.getStdIn().read(buffer) catch std.debug.panic("Couldn't read event from stdin", .{});
     return ret > 0;
 }
 
-fn write_event_to_stdout(event: *InputEvent) void {
-    const buffer = @ptrCast(*[@sizeOf(InputEvent)]u8, event);
+fn write_event_to_stdout(event: *const InputEvent) void {
+    const buffer = std.mem.asBytes(event);
     _ = io.getStdOut().write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
 }
 
@@ -89,7 +89,7 @@ const PASSTHROUGH = init: {
     break :init initial_value;
 };
 
-const EventWriter = fn (event: *InputEvent) void;
+const EventWriter = fn (event: *const InputEvent) void;
 
 pub fn KeyboardState(layers: comptime u8, comptime_layout: anytype, writer: EventWriter) type {
     return struct {
@@ -102,6 +102,10 @@ pub fn KeyboardState(layers: comptime u8, comptime_layout: anytype, writer: Even
 
         fn init(self: *Self, allocator: *std.mem.Allocator) void {
             self.events.ensureCapacity(allocator, 16) catch unreachable;
+        }
+
+        fn deinit(self: *Self, allocator: *std.mem.Allocator) void {
+            self.events.deinit(allocator);
         }
         // void
         // tap(KeyboardState *m, unsigned int32 value) {
@@ -131,7 +135,7 @@ pub fn KeyboardState(layers: comptime u8, comptime_layout: anytype, writer: Even
         //     }
         // }
 
-        fn handle(keyboard: *Self, input: *InputEvent) void {
+        fn handle(keyboard: *Self, input: *const InputEvent) void {
             // consume all taps that are incomplete
             if (input.value == @enumToInt(InputEventVal.PRESS))
                 keyboard.consume_pressed();
@@ -152,7 +156,7 @@ pub fn KeyboardState(layers: comptime u8, comptime_layout: anytype, writer: Even
             }
         }
 
-        fn handle_press(keyboard: *Self, event: *InputEvent) void {
+        fn handle_press(keyboard: *Self, event: *const InputEvent) void {
             writer(event);
             //     // state
             //     switch (m->state) {
@@ -187,7 +191,7 @@ pub fn KeyboardState(layers: comptime u8, comptime_layout: anytype, writer: Even
             //     }
         }
 
-        fn handle_release(keyboard: *Self, event: *InputEvent) void {
+        fn handle_release(keyboard: *Self, event: *const InputEvent) void {
             writer(event);
             //     int32 already_pressed = m->hold_start == AFTER_PRESS;
 
@@ -337,8 +341,6 @@ pub fn KeyboardState(layers: comptime u8, comptime_layout: anytype, writer: Even
 //     loop();
 // }
 
-const layout = [_][256]LayerzAction{PASSTHROUGH};
-
 pub fn main() anyerror!void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = &general_purpose_allocator.allocator;
@@ -347,7 +349,43 @@ pub fn main() anyerror!void {
 
     std.log.info("All your codebase are belong to us.", .{});
 
+    const layout = [_][256]LayerzAction{PASSTHROUGH};
     var keyboard = KeyboardState(layout.len, layout, write_event_to_stdout){};
     keyboard.init(gpa);
+    defer keyboard.deinit(gpa);
     keyboard.loop();
+}
+
+// TODO: how can we avoid the global variable ?
+var test_event_queue: std.ArrayList(InputEvent) = undefined;
+fn testing_write_event(event: *const InputEvent) void {
+    test_event_queue.append(event.*) catch unreachable;
+}
+
+test "pass all keyboard events through with PASSTHROUGH layout" {
+    test_event_queue = std.ArrayList(InputEvent).init(std.testing.allocator);
+    defer test_event_queue.deinit();
+    const layout = [_][256]LayerzAction{PASSTHROUGH};
+    var keyboard = KeyboardState(layout.len, layout, testing_write_event){};
+    keyboard.init(std.testing.allocator);
+    defer keyboard.deinit(std.testing.allocator);
+
+    // This structs actually depend of the compile target...
+    const event0 = InputEvent{
+        .type = linux.EV_KEY,
+        .value = @enumToInt(InputEventVal.PRESS),
+        .code = 90,
+        .time = .{ .tv_sec = 0, .tv_usec = 0 },
+    };
+    const event1 = InputEvent{
+        .type = linux.EV_KEY,
+        .value = @enumToInt(InputEventVal.RELEASE),
+        .code = 90,
+        .time = .{ .tv_sec = 0, .tv_usec = 0 },
+    };
+    keyboard.handle(&event0);
+    keyboard.handle(&event1);
+    try std.testing.expectEqual(test_event_queue.items.len, 2);
+    try std.testing.expectEqual(event0, test_event_queue.items[0]);
+    try std.testing.expectEqual(event1, test_event_queue.items[1]);
 }
