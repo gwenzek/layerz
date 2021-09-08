@@ -14,21 +14,33 @@ const InputEventVal = enum {
 
 const LayerzActionKind = enum {
     TAP,
+    MOD_TAP, // Tap with a modifier
     LAYER_HOLD,
     LAYER_TOGGLE,
 };
 
+// TODO use a tagged enum instead
 const LayerzAction = struct {
     kind: LayerzActionKind,
-    keycode: u8 = undefined,
+    keycode: u8,
     layer: u8 = undefined,
     delay: u16 = undefined,
 };
 
-fn k(keyname: comptime []u8) LayerzAction {
-    return .{
-        LayerzActionKind.TAP,
-    };
+/// Layout DSL: tap the given key
+fn k(comptime keyname: []const u8) LayerzAction {
+    const keycode = @field(linux, "KEY_" ++ keyname);
+    return .{ .kind = LayerzActionKind.TAP, .keycode = keycode };
+}
+
+/// Layout DSL: tap shift and the given key
+fn s(comptime keyname: []const u8) LayerzAction {
+    const keycode = @field(linux, "KEY_" ++ keyname);
+    return .{ .kind = LayerzActionKind.TAP, .keycode = keycode };
+}
+
+test "Layout DSL: k" {
+    try std.testing.expectEqual(linux.KEY_Q, k("Q").keycode);
 }
 
 // const KeyState = enum {
