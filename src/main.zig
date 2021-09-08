@@ -1,5 +1,6 @@
 const std = @import("std");
 const io = std.io;
+const math = std.math;
 const linux = @cImport({
     @cInclude("linux/input.h");
 });
@@ -10,17 +11,6 @@ const InputEventVal = enum {
     RELEASE = 0,
     REPEAT = 2,
 };
-
-fn read_event(event: *InputEvent) bool {
-    const buffer = std.mem.asBytes(event);
-    const ret = io.getStdIn().read(buffer) catch std.debug.panic("Couldn't read event from stdin", .{});
-    return ret > 0;
-}
-
-fn write_event_to_stdout(event: *const InputEvent) void {
-    const buffer = std.mem.asBytes(event);
-    _ = io.getStdOut().write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
-}
 
 const LayerzActionKind = enum {
     TAP,
@@ -314,6 +304,18 @@ pub fn KeyboardState(layers: comptime u8, comptime_layout: anytype, writer: Even
         // }
     };
 }
+
+fn read_event(event: *InputEvent) bool {
+    const buffer = std.mem.asBytes(event);
+    const ret = io.getStdIn().read(buffer) catch std.debug.panic("Couldn't read event from stdin", .{});
+    return ret > 0;
+}
+
+fn write_event_to_stdout(event: *const InputEvent) void {
+    const buffer = std.mem.asBytes(event);
+    _ = io.getStdOut().write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
+}
+
 // int32
 // main(int32 argc, char *argv[]) {
 //     setbuf(stdin, NULL), setbuf(stdout, NULL);
@@ -362,7 +364,31 @@ fn testing_write_event(event: *const InputEvent) void {
     test_event_queue.append(event.*) catch unreachable;
 }
 
-test "pass all keyboard events through with PASSTHROUGH layout" {
+fn input_event(event: InputEventVal, keycode: u16, time: f64) InputEvent {
+    const seconds = math.lossyCast(u32, time);
+    const micro_seconds = math.lossyCast(u32, (time - math.lossyCast(f64, seconds)) * 1000_000);
+    // This structs actually depend of the compile target...
+    return .{
+        .type = linux.EV_KEY,
+        .value = @enumToInt(event),
+        .code = keycode,
+        .time = .{ .tv_sec = seconds, .tv_usec = micro_seconds },
+    };
+}
+
+test "input_event helper correctly converts micro seconds" {
+    try std.testing.expectEqual(
+        InputEvent{
+            .type = linux.EV_KEY,
+            .value = 1,
+            .code = 90,
+            .time = .{ .tv_sec = 123, .tv_usec = 456000 },
+        },
+        input_event(InputEventVal.PRESS, 90, 123.456),
+    );
+}
+
+test "PASSTHROUGH layout passes all keyboard events through" {
     test_event_queue = std.ArrayList(InputEvent).init(std.testing.allocator);
     defer test_event_queue.deinit();
     const layout = [_][256]LayerzAction{PASSTHROUGH};
@@ -370,22 +396,11 @@ test "pass all keyboard events through with PASSTHROUGH layout" {
     keyboard.init(std.testing.allocator);
     defer keyboard.deinit(std.testing.allocator);
 
-    // This structs actually depend of the compile target...
-    const event0 = InputEvent{
-        .type = linux.EV_KEY,
-        .value = @enumToInt(InputEventVal.PRESS),
-        .code = 90,
-        .time = .{ .tv_sec = 0, .tv_usec = 0 },
+    const events = [_]InputEvent{
+        input_event(InputEventVal.PRESS, 90, 0),
+        input_event(InputEventVal.RELEASE, 90, 0.1),
     };
-    const event1 = InputEvent{
-        .type = linux.EV_KEY,
-        .value = @enumToInt(InputEventVal.RELEASE),
-        .code = 90,
-        .time = .{ .tv_sec = 0, .tv_usec = 0 },
-    };
-    keyboard.handle(&event0);
-    keyboard.handle(&event1);
-    try std.testing.expectEqual(test_event_queue.items.len, 2);
-    try std.testing.expectEqual(event0, test_event_queue.items[0]);
-    try std.testing.expectEqual(event1, test_event_queue.items[1]);
+    for (events) |*event| keyboard.handle(event);
+
+    try std.testing.expectEqualSlices(InputEvent, &events, test_event_queue.items);
 }
