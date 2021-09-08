@@ -13,41 +13,58 @@ const InputEventVal = enum {
 };
 
 const LayerzActionKind = enum {
-    TAP,
-    MOD_TAP, // Tap with a modifier
-    LAYER_HOLD,
-    LAYER_TOGGLE,
+    tap,
+    mod_tap, // Tap with a modifier
+    layer_hold,
+    layer_toggle,
 };
 
-// TODO use a tagged enum instead
-const LayerzAction = struct {
-    kind: LayerzActionKind,
-    keycode: u8,
-    layer: u8 = undefined,
-    delay: u16 = undefined,
+const LayerzActionTap = struct { key: u8 };
+const LayerzActionModTap = struct { key: u8, mod: u8 };
+const LayerzActionLayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 200 };
+const LayerzActionLayerToggle = struct { layer: u8 };
+
+const LayerzAction = union(LayerzActionKind) {
+    tap: LayerzActionTap,
+    mod_tap: LayerzActionModTap,
+    layer_hold: LayerzActionLayerHold,
+    layer_toggle: LayerzActionLayerToggle,
 };
+
+fn resolve(comptime keyname: []const u8) u8 {
+    const fullname = "KEY_" ++ keyname;
+    if (!@hasDecl(linux, fullname)) {
+        @compileError("input-event-codes.h doesn't declare: " ++ fullname);
+    }
+    return @field(linux, fullname);
+}
 
 /// Layout DSL: tap the given key
 fn k(comptime keyname: []const u8) LayerzAction {
-    const keycode = @field(linux, "KEY_" ++ keyname);
-    return .{ .kind = LayerzActionKind.TAP, .keycode = keycode };
+    return .{ .tap = .{ .key = resolve(keyname) } };
+}
+
+test "Layout DSL: k" {
+    try std.testing.expectEqual(linux.KEY_Q, k("Q").tap.key);
 }
 
 /// Layout DSL: tap shift and the given key
 fn s(comptime keyname: []const u8) LayerzAction {
-    const keycode = @field(linux, "KEY_" ++ keyname);
-    return .{ .kind = LayerzActionKind.TAP, .keycode = keycode };
+    return .{
+        .mod_tap = .{ .key = resolve(keyname), .mod = linux.KEY_LEFTSHIFT },
+    };
 }
 
-test "Layout DSL: k" {
-    try std.testing.expectEqual(linux.KEY_Q, k("Q").keycode);
+test "Layout DSL: s" {
+    try std.testing.expectEqual(linux.KEY_EQUAL, s("EQUAL").mod_tap.key);
+    try std.testing.expectEqual(linux.KEY_LEFTSHIFT, s("EQUAL").mod_tap.mod);
 }
 
 // const KeyState = enum {
 //     RELEASED,
 //     PRESSED,
-//     TAPPED,
-//     DOUBLETAPPED,
+//     tapPED,
+//     DOUBLEtapPED,
 //     CONSUMED,
 // };
 // void
@@ -69,7 +86,7 @@ const LayerzEventKind = enum {
     NONE,
     MAYBE_LAYER,
     LAYER_ON,
-    MAYBE_DOUBLE_TAP,
+    MAYBE_DOUBLE_tap,
 };
 
 const LayerzEvent = struct {
@@ -83,10 +100,7 @@ const LayerzEvent = struct {
 const PASSTHROUGH = init: {
     var initial_value: [256]LayerzAction = undefined;
     for (initial_value) |*action, i| {
-        action.* = LayerzAction{
-            .kind = LayerzActionKind.TAP,
-            .keycode = i,
-        };
+        action.* = LayerzAction{ .tap = .{ .key = i } };
     }
     break :init initial_value;
 };
@@ -160,9 +174,9 @@ const KeyboardState = struct {
 
     fn handle_press(keyboard: *Self, event: *const InputEvent) void {
         const action = keyboard.layout[keyboard.layer][event.code];
-        if (action.kind == LayerzActionKind.TAP and action.keycode != event.code) {
+        if (action == .tap and action.tap.key != event.code) {
             var new_event = event.*;
-            new_event.code = action.keycode;
+            new_event.code = action.tap.key;
             keyboard.writer(&new_event);
         } else {
             keyboard.writer(event);
@@ -170,10 +184,10 @@ const KeyboardState = struct {
 
         //     // state
         //     switch (m->state) {
-        //         case TAPPED:
-        //         case DOUBLETAPPED:
+        //         case tapPED:
+        //         case DOUBLEtapPED:
         //             if (DUR_MILLIS(m->changed, input->time) < cfg.double_tap_millis)
-        //                 m->state = DOUBLETAPPED;
+        //                 m->state = DOUBLEtapPED;
         //             else
         //                 m->state = PRESSED;
         //             break;
@@ -188,8 +202,8 @@ const KeyboardState = struct {
 
         //     // action
         //     switch (m->state) {
-        //         case TAPPED:
-        //         case DOUBLETAPPED:
+        //         case tapPED:
+        //         case DOUBLEtapPED:
         //             tap(m, INPUT_VAL_PRESS);
         //             break;
         //         case RELEASED:
@@ -209,12 +223,12 @@ const KeyboardState = struct {
         //     switch (m->state) {
         //         case PRESSED:
         //             if (DUR_MILLIS(m->changed, input->time) < cfg.tap_millis)
-        //                 m->state = TAPPED;
+        //                 m->state = tapPED;
         //             else
         //                 m->state = RELEASED;
         //             break;
-        //         case TAPPED:
-        //         case DOUBLETAPPED:
+        //         case tapPED:
+        //         case DOUBLEtapPED:
         //             break;
         //         case CONSUMED:
         //             already_pressed = 1;
@@ -227,7 +241,7 @@ const KeyboardState = struct {
 
         //     // action
         //     switch (m->state) {
-        //         case TAPPED:
+        //         case tapPED:
         //             // release
         //             if (already_pressed) {
         //                 hold(m, INPUT_VAL_RELEASE);
@@ -239,7 +253,7 @@ const KeyboardState = struct {
         //             syn_pause();
         //             tap(m, INPUT_VAL_RELEASE);
         //             break;
-        //         case DOUBLETAPPED:
+        //         case DOUBLEtapPED:
         //             tap(m, INPUT_VAL_RELEASE);
         //             break;
         //         case CONSUMED:
@@ -266,8 +280,8 @@ const KeyboardState = struct {
         //                     syn_pause();
         //                 }
         //                 break;
-        //             case TAPPED:
-        //             case DOUBLETAPPED:
+        //             case tapPED:
+        //             case DOUBLEtapPED:
         //             case RELEASED:
         //             case CONSUMED:
         //                 break;
@@ -278,8 +292,8 @@ const KeyboardState = struct {
         //             case PRESSED:
         //                 m->state = CONSUMED;
         //                 break;
-        //             case TAPPED:
-        //             case DOUBLETAPPED:
+        //             case tapPED:
+        //             case DOUBLEtapPED:
         //             case RELEASED:
         //             case CONSUMED:
         //                 break;
@@ -383,14 +397,16 @@ fn testing_write_event(event: *const InputEvent) void {
     test_event_queue.append(event.*) catch unreachable;
 }
 
-fn input_event(event: InputEventVal, keycode: u16, time: f64) InputEvent {
+/// Shortcut to create an InputEvent, using float for timestamp.
+fn input_event(event: InputEventVal, key: u16, time: f64) InputEvent {
     const seconds = math.lossyCast(u32, time);
     const micro_seconds = math.lossyCast(u32, (time - math.lossyCast(f64, seconds)) * 1000_000);
-    // This structs actually depend of the compile target...
     return .{
         .type = linux.EV_KEY,
         .value = @enumToInt(event),
-        .code = keycode,
+        .code = key,
+        // The way time is stored actually depends of the compile target...
+        // TODO: handle the case where sec and usec are part of the InputEvent struct.
         .time = .{ .tv_sec = seconds, .tv_usec = micro_seconds },
     };
 }
@@ -424,14 +440,14 @@ test "PASSTHROUGH layout passes all keyboard events through" {
     try std.testing.expectEqualSlices(InputEvent, &events, test_event_queue.items);
 }
 
-test "Custom layer modify keycode" {
+test "Custom layer modify key" {
     test_event_queue = std.ArrayList(InputEvent).init(std.testing.allocator);
     defer test_event_queue.deinit();
 
     var layer: [256]LayerzAction = undefined;
     for (layer) |*action, i| action.* = PASSTHROUGH[i];
     // Map key 90 to key 100
-    layer[90] = LayerzAction{ .kind = LayerzActionKind.TAP, .keycode = 100 };
+    layer[90] = LayerzAction{ .tap = .{ .key = 100 } };
 
     var layout = [_][256]LayerzAction{layer};
     var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
