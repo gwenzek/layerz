@@ -11,7 +11,7 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
-    const exe = b.addExecutable("layerz", "src/layerz.zig");
+    const exe = b.addExecutable("layerz", "src/main.zig");
     exe.addIncludeDir("/usr/include/");
     exe.setTarget(target);
     exe.setBuildMode(mode);
