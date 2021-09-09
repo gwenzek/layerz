@@ -15,15 +15,19 @@ const KEY_REPEAT = 2;
 
 const LayerzActionKind = enum {
     tap,
-    mod_tap, // Tap with a modifier
+    mod_tap,
     layer_hold,
     layer_toggle,
+    disabled,
+    transparent,
 };
 
 const LayerzActionTap = struct { key: u8 };
 const LayerzActionModTap = struct { key: u8, mod: u8 };
 const LayerzActionLayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 200 };
 const LayerzActionLayerToggle = struct { layer: u8 };
+const LayerzActionDisabled = struct {};
+const LayerzActionTransparent = struct {};
 // TODO: add "transparent" and "disabled" actions
 
 const LayerzAction = union(LayerzActionKind) {
@@ -31,7 +35,11 @@ const LayerzAction = union(LayerzActionKind) {
     mod_tap: LayerzActionModTap,
     layer_hold: LayerzActionLayerHold,
     layer_toggle: LayerzActionLayerToggle,
+    disabled: LayerzActionDisabled,
+    transparent: LayerzActionTransparent,
 };
+
+const Layerz = [256]LayerzAction;
 
 pub fn resolve(comptime keyname: []const u8) u8 {
     const fullname = "KEY_" ++ keyname;
@@ -113,13 +121,11 @@ const LayerzEvent = struct {
     timestamp_ms: u16,
 };
 
-const PASSTHROUGH = init: {
-    var initial_value: [256]LayerzAction = undefined;
-    for (initial_value) |*action, i| {
-        action.* = LayerzAction{ .tap = .{ .key = i } };
-    }
-    break :init initial_value;
-};
+const PASSTHROUGH: Layerz = [_]LayerzAction{.{ .transparent = .{} }} ** 256;
+
+pub fn map(layer: *Layerz, comptime src_key: []const u8, action: LayerzAction) void {
+    layer[resolve(src_key)] = action;
+}
 
 const EventWriter = fn (event: *const InputEvent) void;
 
@@ -195,14 +201,19 @@ const KeyboardState = struct {
             std.log.warn("unexpected .value={d} .code={d}, doing nothing", .{ input.value, input.code });
             return;
         }
-
         const action = keyboard.layout[keyboard.layer][input.code];
+        keyboard.handle_action(action, input);
+    }
+
+    fn handle_action(keyboard: *Self, action: LayerzAction, input: *const InputEvent) void {
         // TODO: generate this switch ?
         switch (action) {
-            LayerzActionKind.tap => |val| keyboard.handle_tap(val, input),
-            LayerzActionKind.mod_tap => |val| keyboard.handle_mod_tap(val, input),
-            LayerzActionKind.layer_toggle => |val| keyboard.handle_layer_toggle(val, input),
-            LayerzActionKind.layer_hold => |val| keyboard.handle_layer_hold(val, input),
+            .tap => |val| keyboard.handle_tap(val, input),
+            .mod_tap => |val| keyboard.handle_mod_tap(val, input),
+            .layer_toggle => |val| keyboard.handle_layer_toggle(val, input),
+            .layer_hold => |val| keyboard.handle_layer_hold(val, input),
+            .disabled => |val| keyboard.handle_disabled(val, input),
+            .transparent => |val| keyboard.handle_transparent(val, input),
         }
     }
 
@@ -217,8 +228,7 @@ const KeyboardState = struct {
         defer test_outputs.deinit();
 
         var layer: [256]LayerzAction = PASSTHROUGH;
-        // Map key "Q" to "A"
-        layer[resolve("Q")] = k("A");
+        map(&layer, "Q", k("A"));
 
         var layout = [_][256]LayerzAction{layer};
         var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
@@ -241,6 +251,8 @@ const KeyboardState = struct {
         try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
     }
 
+    /// Output two keys. This is useful for modifiers.
+    // TODO: support more than one mods
     fn handle_mod_tap(keyboard: *Self, tap: LayerzActionModTap, event: *const InputEvent) void {
         var new_event = event.*;
         new_event.code = tap.key;
@@ -264,7 +276,7 @@ const KeyboardState = struct {
 
         var layer: [256]LayerzAction = PASSTHROUGH;
         // Map "Q" to "(" (shit+9)
-        layer[resolve("Q")] = s("9");
+        map(&layer, "Q", s("9"));
 
         var layout = [_][256]LayerzAction{layer};
         var keyboard = KeyboardState{ .layout = &.{layer}, .writer = testing_write_event };
@@ -302,15 +314,15 @@ const KeyboardState = struct {
         test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
         defer test_outputs.deinit();
 
-        var layer0: [256]LayerzAction = PASSTHROUGH;
-        var layer1: [256]LayerzAction = PASSTHROUGH;
+        var layer0 = PASSTHROUGH;
+        var layer1 = PASSTHROUGH;
         // On both layers: map tab to toggle(layer1)
-        layer0[resolve("TAB")] = lt(1);
-        layer1[resolve("TAB")] = lt(1);
+        map(&layer0, "TAB", lt(1));
+        map(&layer1, "TAB", lt(1));
         // On second layer: map key "Q" to "A"
-        layer1[resolve("Q")] = k("A");
+        map(&layer1, "Q", k("A"));
 
-        var layout = [_][256]LayerzAction{ layer0, layer1 };
+        var layout = [_]Layerz{ layer0, layer1 };
         var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
         keyboard.init();
 
@@ -351,43 +363,71 @@ const KeyboardState = struct {
 
     fn handle_layer_hold(keyboard: *Self, layer_hold: LayerzActionLayerHold, event: *const InputEvent) void {
         keyboard.writer(event);
+        // TODO: implement layer_hold
     }
 
-    fn loop(keyboard: *Self) void {
-        var input: InputEvent = undefined;
+    /// Do nothing.
+    fn handle_disabled(keyboard: *Self, layer_hold: LayerzActionDisabled, event: *const InputEvent) void {}
 
-        while (read_event(&input)) {
-            keyboard.handle(&input);
+    /// Do the action from the base layer instead.
+    /// If we are already on the base layer, just forward the input event.
+    fn handle_transparent(keyboard: *Self, transparent: LayerzActionTransparent, event: *const InputEvent) void {
+        if (keyboard.layer == keyboard.base_layer) {
+            keyboard.writer(event);
+        } else {
+            const action = keyboard.layout[keyboard.base_layer][event.code];
+            keyboard.handle_action(action, event);
         }
     }
 
-    // void
-    // print_usage(FILE *stream, const char *program) {
-    //     fprintf(stream,
-    //             "dual-function-keys plugin for interception tools:\n"
-    //             "        https://gitlab.com/interception/linux/tools\n"
-    //             "\n"
-    //             "usage: %s [-v] [-h] -c /path/to/cfg.yaml\n"
-    //             "\n"
-    //             "options:\n"
-    //             "    -v                     show version and exit\n"
-    //             "    -h                     show this message and exit\n"
-    //             "    -c /path/to/cfg.yaml   use cfg.yaml\n",
-    //             program);
-    // }
-};
+    test "PASSTHROUGH layout passes all keyboard events through" {
+        test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
+        defer test_outputs.deinit();
+        const layout = [_]Layerz{PASSTHROUGH};
+        var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
+        keyboard.init();
 
-fn read_event(event: *InputEvent) bool {
-    const buffer = std.mem.asBytes(event);
-    const ret = io.getStdIn().read(buffer) catch std.debug.panic("Couldn't read event from stdin", .{});
-    return ret > 0;
-}
+        const inputs = [_]InputEvent{
+            input_event(KEY_PRESS, "Q", 0.0),
+            input_event(KEY_RELEASE, "Q", 0.1),
+        };
+        for (inputs) |*event| keyboard.handle(event);
+
+        try std.testing.expectEqualSlices(InputEvent, &inputs, test_outputs.items);
+    }
+
+    /// Read events from stdinput and handle them.
+    fn loop(keyboard: *Self) void {
+        var input: InputEvent = undefined;
+        const buffer = std.mem.asBytes(&input);
+        while (io.getStdIn().read(buffer)) {
+            keyboard.handle(&input);
+        } else |err| {
+            std.debug.panic("Couldn't read event from stdin", .{});
+        }
+    }
+};
 
 fn write_event_to_stdout(event: *const InputEvent) void {
     const buffer = std.mem.asBytes(event);
     _ = io.getStdOut().write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
 }
 
+// void
+// print_usage(FILE *stream, const char *program) {
+//     fprintf(stream,
+//             "dual-function-keys plugin for interception tools:\n"
+//             "        https://gitlab.com/interception/linux/tools\n"
+//             "\n"
+//             "usage: %s [-v] [-h] -c /path/to/cfg.yaml\n"
+//             "\n"
+//             "options:\n"
+//             "    -v                     show version and exit\n"
+//             "    -h                     show this message and exit\n"
+//             "    -c /path/to/cfg.yaml   use cfg.yaml\n",
+//             program);
+// }
+//
 // int32
 // main(int32 argc, char *argv[]) {
 //     setbuf(stdin, NULL), setbuf(stdout, NULL);
@@ -423,14 +463,14 @@ pub fn main() anyerror!void {
 
     std.log.info("All your codebase are belong to us.", .{});
 
-    const layout = [_][256]LayerzAction{PASSTHROUGH};
-    var keyboard = KeyboardState(layout.len, layout, write_event_to_stdout){};
-    keyboard.init(gpa);
-    defer keyboard.deinit(gpa);
+    const layout = [_]Layerz{PASSTHROUGH};
+    var keyboard = KeyboardState{ .layout = &layout, .writer = write_event_to_stdout };
+    keyboard.init();
     keyboard.loop();
 }
 
 // TODO: how can we avoid the global variable ?
+//
 var test_outputs: std.ArrayList(InputEvent) = undefined;
 fn testing_write_event(event: *const InputEvent) void {
     test_outputs.append(event.*) catch unreachable;
@@ -460,20 +500,4 @@ test "input_event helper correctly converts micro seconds" {
         },
         input_event(KEY_PRESS, "Q", 123.456),
     );
-}
-
-test "PASSTHROUGH layout passes all keyboard events through" {
-    test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
-    defer test_outputs.deinit();
-    const layout = [_][256]LayerzAction{PASSTHROUGH};
-    var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
-    keyboard.init();
-
-    const events = [_]InputEvent{
-        input_event(KEY_PRESS, "Q", 0.0),
-        input_event(KEY_RELEASE, "Q", 0.1),
-    };
-    for (events) |*event| keyboard.handle(event);
-
-    try std.testing.expectEqualSlices(InputEvent, &events, test_outputs.items);
 }
