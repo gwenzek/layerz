@@ -11,13 +11,13 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
-    const exe = b.addExecutable("layerz", "src/main.zig");
+    const exe = b.addExecutable("layerz", "src/layerz.zig");
     exe.addIncludeDir("/usr/include/");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
 
-    const tests = b.addTest("src/main.zig");
+    const tests = b.addTest("src/layerz.zig");
     tests.addIncludeDir("/usr/include/");
     b.step("test", "Tests").dependOn(&tests.step);
 }

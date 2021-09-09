@@ -519,7 +519,13 @@ pub fn main() anyerror!void {
 
     std.log.info("All your codebase are belong to us.", .{});
 
-    const layout = [_]Layerz{PASSTHROUGH};
+    var azerty = PASSTHROUGH;
+    map(&azerty, "Q", k("A"));
+    map(&azerty, "W", k("Z"));
+    map(&azerty, "A", k("Q"));
+    map(&azerty, "Z", k("W"));
+    map(&azerty, "S", s("9"));
+    const layout = [_]Layerz{azerty};
     var keyboard = KeyboardState{ .layout = &layout, .writer = write_event_to_stdout };
     keyboard.init();
     keyboard.loop();
