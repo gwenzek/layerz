@@ -168,58 +168,67 @@ const KeyboardState = struct {
     // }
 
     fn handle(keyboard: *Self, input: *const InputEvent) void {
+
         // // consume all taps that are incomplete
         // if (input.value == @enumToInt(InputEventVal.PRESS))
         //     keyboard.consume_pressed();
-
-        switch (input.value) {
-            // TODO: I don't think this API make sense, we should switch on action type
-            @enumToInt(InputEventVal.PRESS) => keyboard.handle_press(input),
-            @enumToInt(InputEventVal.RELEASE) => keyboard.handle_press(input),
+        if (input.value == @enumToInt(InputEventVal.REPEAT)) {
+            // TODO: check if it's right to swallow repeats event
             // linux console, X, wayland handles repeat
-            @enumToInt(InputEventVal.REPEAT) => {},
-            else => std.log.warn("unexpected .value={d} .code={d}, doing nothing", .{ input.value, input.code }),
+            return;
+        }
+        if (input.value != @enumToInt(InputEventVal.PRESS) and input.value != @enumToInt(InputEventVal.RELEASE)) {
+            std.log.warn("unexpected .value={d} .code={d}, doing nothing", .{ input.value, input.code });
+            return;
+        }
+
+        const action = keyboard.layout[keyboard.layer][input.code];
+        switch (action) {
+            LayerzActionKind.tap => |val| keyboard.handle_tap(val, input),
+            LayerzActionKind.mod_tap => |val| keyboard.handle_mod_tap(val, input),
+            LayerzActionKind.layer_toggle => |val| keyboard.handle_layer_toggle(val, input),
+            LayerzActionKind.layer_hold => |val| keyboard.handle_layer_hold(val, input),
         }
     }
 
-    fn handle_press(keyboard: *Self, event: *const InputEvent) void {
-        const action = keyboard.layout[keyboard.layer][event.code];
-        switch (action) {
-            LayerzActionKind.tap => |tap| {
-                var new_event = event.*;
-                new_event.code = tap.key;
-                keyboard.writer(&new_event);
-            },
-            LayerzActionKind.mod_tap => |tap| {
-                var new_event = event.*;
-                new_event.code = tap.key;
-                var mod_event = event.*;
-                mod_event.code = tap.mod;
-                if (event.value == @enumToInt(InputEventVal.PRESS)) {
-                    // First press the modifier then the key.
-                    // TODO: should we modify timestamps ?
-                    keyboard.writer(&mod_event);
-                    keyboard.writer(&new_event);
-                } else if (event.value == @enumToInt(InputEventVal.RELEASE)) {
-                    // First release the key then the modifier.
-                    keyboard.writer(&new_event);
-                    keyboard.writer(&mod_event);
-                }
-            },
-            LayerzActionKind.layer_toggle => |layer_toggle| {
-                switch (event.value) {
-                    @enumToInt(InputEventVal.RELEASE) => {
-                        if (keyboard.layer != layer_toggle.layer) {
-                            keyboard.layer = layer_toggle.layer;
-                        } else {
-                            keyboard.layer = keyboard.base_layer;
-                        }
-                    },
-                    else => {},
-                }
-            },
-            else => keyboard.writer(event),
+    fn handle_tap(keyboard: *Self, tap: LayerzActionTap, event: *const InputEvent) void {
+        var new_event = event.*;
+        new_event.code = tap.key;
+        keyboard.writer(&new_event);
+    }
+
+    fn handle_mod_tap(keyboard: *Self, tap: LayerzActionModTap, event: *const InputEvent) void {
+        var new_event = event.*;
+        new_event.code = tap.key;
+        var mod_event = event.*;
+        mod_event.code = tap.mod;
+        if (event.value == @enumToInt(InputEventVal.PRESS)) {
+            // First press the modifier then the key.
+            // TODO: should we modify timestamps ?
+            keyboard.writer(&mod_event);
+            keyboard.writer(&new_event);
+        } else if (event.value == @enumToInt(InputEventVal.RELEASE)) {
+            // First release the key then the modifier.
+            keyboard.writer(&new_event);
+            keyboard.writer(&mod_event);
         }
+    }
+
+    fn handle_layer_toggle(keyboard: *Self, layer_toggle: LayerzActionLayerToggle, event: *const InputEvent) void {
+        switch (event.value) {
+            @enumToInt(InputEventVal.RELEASE) => {
+                if (keyboard.layer != layer_toggle.layer) {
+                    keyboard.layer = layer_toggle.layer;
+                } else {
+                    keyboard.layer = keyboard.base_layer;
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn handle_layer_hold(keyboard: *Self, layer_hold: LayerzActionLayerHold, event: *const InputEvent) void {
+        keyboard.writer(event);
     }
 
     fn loop(keyboard: *Self) void {
