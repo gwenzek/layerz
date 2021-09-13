@@ -60,11 +60,6 @@ pub fn k(comptime keyname: []const u8) LayerzAction {
     return .{ .tap = .{ .key = resolve(keyname) } };
 }
 
-test "Layout DSL: k" {
-    try std.testing.expectEqual(linux.KEY_Q, k("Q").tap.key);
-    try std.testing.expectEqual(linux.KEY_TAB, k("TAB").tap.key);
-}
-
 /// Layout DSL: tap shift and the given key
 pub fn s(comptime keyname: []const u8) LayerzAction {
     return .{
@@ -72,18 +67,24 @@ pub fn s(comptime keyname: []const u8) LayerzAction {
     };
 }
 
-test "Layout DSL: s" {
-    try std.testing.expectEqual(linux.KEY_EQUAL, s("EQUAL").mod_tap.key);
-    try std.testing.expectEqual(linux.KEY_LEFTSHIFT, s("EQUAL").mod_tap.mod);
-}
-
+/// Layout DSL: toggle a layer
 pub fn lt(layer: u8) LayerzAction {
     return .{
         .layer_toggle = .{ .layer = layer },
     };
 }
 
+/// Layout DSL: toggle a layer when hold, tap a key when tapped
+pub fn lh(comptime keyname: []const u8, layer: u8) LayerzAction {
+    return .{
+        .layer_hold = .{ .layer = layer, .key = resolve(keyname) },
+    };
+}
+
+/// Layout DSL: disable a key
 pub const x: LayerzAction = .{ .disabled = .{} };
+
+/// Layout DSL: pass the key to the layer below
 pub const trans: LayerzAction = .{ .transparent = .{} };
 
 pub const PASSTHROUGH: Layerz = [_]LayerzAction{trans} ** 256;
@@ -101,6 +102,11 @@ const syn_pause = InputEvent{
 };
 
 pub const EventWriter = fn (event: *const InputEvent) void;
+pub const DelayedHandler = fn (
+    keyboard: *KeyboardState,
+    event: InputEvent,
+    next_event: InputEvent,
+) void;
 
 pub const KeyboardState = struct {
     layout: []const [256]LayerzAction,
@@ -108,6 +114,8 @@ pub const KeyboardState = struct {
 
     base_layer: u8 = 0,
     layer: u8 = 0,
+    maybe_layer: LayerzActionLayerHold = undefined,
+    delayed_handler: ?*const DelayedHandler = null,
     _stack_buffer: [32 * @sizeOf(InputEvent)]u8 = undefined,
     stack: std.ArrayListUnmanaged(InputEvent) = undefined,
 
@@ -131,6 +139,16 @@ pub const KeyboardState = struct {
         if (input.type != linux.EV_KEY) {
             keyboard.writer(input);
             return;
+        }
+        std.log.debug("read {}", .{input});
+
+        const stack_len = keyboard.stack.items.len;
+        if (stack_len > 0) {
+            if (keyboard.delayed_handler) |handler| {
+                const last_input = keyboard.stack.items[stack_len - 1];
+                handler.*(keyboard, last_input, input.*);
+                return;
+            }
         }
 
         // consume all taps that are incomplete
@@ -166,7 +184,6 @@ pub const KeyboardState = struct {
         var output = input.*;
         output.code = tap.key;
         keyboard.writer(&output);
-        std.log.debug("({d}-{d})->({d}-{d})", .{ input.code, input.value, output.code, output.value });
     }
 
     /// Output two keys. This is useful for modifiers.
@@ -217,8 +234,75 @@ pub const KeyboardState = struct {
     }
 
     fn handle_layer_hold(keyboard: *Self, layer_hold: LayerzActionLayerHold, event: *const InputEvent) void {
-        keyboard.writer(event);
-        // TODO: implement layer_hold
+        switch (event.value) {
+            KEY_PRESS => {
+                keyboard.maybe_layer = layer_hold;
+                keyboard.delayed_handler = &handle_layer_hold_second;
+                var delayed = keyboard.stack.addOneAssumeCapacity();
+                delayed.* = event.*;
+                delayed.code = layer_hold.key;
+                std.log.debug("Maybe we are holding a layer: {}. Delay event: {}", .{ layer_hold, event });
+            },
+            KEY_RELEASE => {
+                keyboard.delayed_handler = null;
+                if (keyboard.layer == layer_hold.layer) {
+                    std.log.debug("Disabling layer: {} on {}", .{ layer_hold, event });
+                    keyboard.layer = keyboard.base_layer;
+                } else {
+                    keyboard.handle_tap(.{ .key = layer_hold.key }, event);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn handle_layer_hold_second(
+        keyboard: *Self,
+        event: InputEvent,
+        next_event: InputEvent,
+    ) void {
+        const action = keyboard.layout[keyboard.base_layer][event.code];
+        const layer_hold = switch (action) {
+            .layer_hold => |val| val,
+            else => {
+                std.log.warn("Inconsistent internal state, expected a Layer_Hold action on top of the stack, but found: {}", .{action});
+                keyboard.delayed_handler = null;
+                keyboard.consume_pressed();
+                return;
+            },
+        };
+        if (event.code == next_event.code) {
+            // Another event on the layer key
+            if (next_event.value == KEY_RELEASE) {
+                if (delta_ms(next_event, event) < layer_hold.delay_ms) {
+                    // We have just tapped on the layer button, emit the key
+                    std.log.debug("Quick tap on layer {}", .{layer_hold});
+                    keyboard.writer(&event);
+                    keyboard.handle_tap(.{ .key = layer_hold.key }, &next_event);
+                } else {
+                    // We have been holding for a long time, do nothing
+                }
+                keyboard.delayed_handler = null;
+                _ = keyboard.stack.pop();
+            }
+        } else {
+            if (next_event.value == KEY_PRESS) {
+                // TODO: handle quick typing ?
+                // if (delta_ms(next_event, event) > layer_hold.delay_ms) ...
+
+                std.log.debug("Holding layer {}", .{layer_hold});
+                // We are holding the layer !
+                keyboard.layer = layer_hold.layer;
+                // Call regular key handling code with the correct layer
+                const next_action = keyboard.layout[keyboard.layer][next_event.code];
+                keyboard.handle_action(next_action, &next_event);
+                // Disable handle_layer_hold_second
+                keyboard.delayed_handler = null;
+                _ = keyboard.stack.pop();
+            } else {
+                // ignore key releases;
+            }
+        }
     }
 
     /// Do nothing.
@@ -261,7 +345,23 @@ pub const KeyboardState = struct {
 
 pub fn write_event_to_stdout(event: *const InputEvent) void {
     const buffer = std.mem.asBytes(event);
+    if (event.type == linux.EV_KEY) {
+        std.log.debug("wrote {}", .{event});
+    }
     _ = io.getStdOut().write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
+}
+
+fn delta_ms(event1: InputEvent, event2: InputEvent) i32 {
+    var delta = 1000 * (event2.time.tv_sec - event1.time.tv_sec);
+
+    var delta_us = event2.time.tv_usec - event1.time.tv_usec;
+    // Just be consistent on how the rounding is done.
+    if (delta_us >= 0) {
+        delta += @divFloor(delta_us, 1000);
+    } else {
+        delta -= @divFloor(-delta_us, 1000);
+    }
+    return math.lossyCast(i32, delta);
 }
 
 test "Key remap with modifier" {
@@ -433,8 +533,53 @@ test "Transparent pass to layer below" {
     try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
 }
 
+test "Layer Hold" {
+    test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
+    defer test_outputs.deinit();
+
+    var layer0 = PASSTHROUGH;
+    var layer1 = PASSTHROUGH;
+    // On both layers: map tab to toggle(layer1)
+    map(&layer0, "TAB", lh("TAB", 1));
+    // On second layer: map key "Q" to "A"
+    map(&layer1, "Q", k("A"));
+
+    var layout = [_]Layerz{ layer0, layer1 };
+    var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
+    keyboard.init();
+
+    const inputs = [_]InputEvent{
+        // layer 0
+        input_event(KEY_PRESS, "Q", 0.0),
+        input_event(KEY_RELEASE, "Q", 0.1),
+        // Quick tap on "TAB"
+        input_event(KEY_PRESS, "TAB", 0.2),
+        input_event(KEY_RELEASE, "TAB", 0.3),
+        // Type "Q" while pressing "TAB", switch to layer 1
+        input_event(KEY_PRESS, "TAB", 0.4),
+        input_event(KEY_PRESS, "Q", 0.5),
+        input_event(KEY_RELEASE, "Q", 0.6),
+        input_event(KEY_RELEASE, "TAB", 0.7),
+        // back to layer 0
+        input_event(KEY_PRESS, "Q", 0.8),
+        input_event(KEY_RELEASE, "Q", 0.9),
+    };
+    for (inputs) |*event| keyboard.handle(event);
+
+    const expected = [_]InputEvent{
+        input_event(KEY_PRESS, "Q", 0.0),
+        input_event(KEY_RELEASE, "Q", 0.1),
+        input_event(KEY_PRESS, "TAB", 0.2),
+        input_event(KEY_RELEASE, "TAB", 0.3),
+        input_event(KEY_PRESS, "A", 0.5),
+        input_event(KEY_RELEASE, "A", 0.6),
+        input_event(KEY_PRESS, "Q", 0.8),
+        input_event(KEY_RELEASE, "Q", 0.9),
+    };
+    try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
+}
+
 // TODO: how can we avoid the global variable ?
-//
 var test_outputs: std.ArrayList(InputEvent) = undefined;
 fn testing_write_event(event: *const InputEvent) void {
     test_outputs.append(event.*) catch unreachable;
@@ -442,8 +587,9 @@ fn testing_write_event(event: *const InputEvent) void {
 
 /// Shortcut to create an InputEvent, using float for timestamp.
 fn input_event(event: u8, comptime keyname: []const u8, time: f64) InputEvent {
-    const seconds = math.lossyCast(u32, time);
-    const micro_seconds = math.lossyCast(u32, (time - math.lossyCast(f64, seconds)) * 1000_000);
+    const time_modf = math.modf(time);
+    const seconds = math.lossyCast(u32, time_modf.ipart);
+    const micro_seconds = math.lossyCast(u32, time_modf.fpart * 1e6);
     return .{
         .type = linux.EV_KEY,
         .value = event,
@@ -464,4 +610,27 @@ test "input_event helper correctly converts micro seconds" {
         },
         input_event(KEY_PRESS, "Q", 123.456),
     );
+    try std.testing.expectEqual(
+        InputEvent{
+            .type = linux.EV_KEY,
+            .value = 1,
+            .code = linux.KEY_Q,
+            .time = .{ .tv_sec = 123, .tv_usec = 456999 },
+        },
+        input_event(KEY_PRESS, "Q", 123.457),
+    );
+}
+
+fn _input_delta_ms(t1: f64, t2: f64) i32 {
+    return delta_ms(
+        input_event(KEY_PRESS, "Q", t1),
+        input_event(KEY_PRESS, "Q", t2),
+    );
+}
+
+test "delta_ms" {
+    try std.testing.expectEqual(@as(i32, 1), _input_delta_ms(123.456, 123.45701));
+    try std.testing.expectEqual(@as(i32, 0), _input_delta_ms(123.456, 123.45650));
+    try std.testing.expectEqual(@as(i32, -1), _input_delta_ms(123.45701, 123.456));
+    try std.testing.expectEqual(@as(i32, 1000), _input_delta_ms(123, 124));
 }
