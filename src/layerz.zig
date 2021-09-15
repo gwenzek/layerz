@@ -5,7 +5,60 @@ const math = std.math;
 const linux = @cImport({
     @cInclude("linux/input.h");
 });
-const InputEvent = linux.input_event;
+
+var _start_time: i64 = -1;
+/// This is a port of linux input_event struct.
+/// The C code has different way of storing the time depending on the machine
+/// this isn't currently supported in the Zig
+const InputEvent = extern struct {
+    time: linux.timeval,
+    type: u16,
+    code: u16,
+    value: i32,
+
+    pub fn format(
+        input: *const InputEvent,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        if (_start_time < 0) _start_time = std.time.timestamp();
+        // use time relative to the start of the program
+        const time: f64 = math.lossyCast(f64, input.time.tv_sec - _start_time) + math.lossyCast(f64, input.time.tv_usec) / 1e6;
+        if (input.type == linux.EV_KEY) {
+            const event = switch (input.value) {
+                KEY_PRESS => "KEY_PRESS",
+                KEY_RELEASE => "KEY_RELEASE",
+                KEY_REPEAT => "KEY_REPEAT",
+                else => {
+                    try std.fmt.format(writer, "{{ {d} {d} ({d:.3}) }}", .{ input.value, input.code, time });
+                    return;
+                },
+            };
+
+            try std.fmt.format(writer, "{{{s}({d}) ({d:.3})}}", .{ event, input.code, time });
+        } else {
+            try std.fmt.format(writer, "{{EV({d}, {d}, {d}) ({d:.3})}}", .{ input.type, input.value, input.code, time });
+        }
+    }
+};
+
+test "InputEvent matches input_event byte by byte" {
+    const c_struct = linux.input_event{
+        .type = linux.EV_KEY,
+        .value = KEY_PRESS,
+        .code = 88,
+        .time = .{ .tv_sec = 123, .tv_usec = 456789 },
+    };
+    const zig_struct = InputEvent{
+        .type = linux.EV_KEY,
+        .value = KEY_PRESS,
+        .code = 88,
+        .time = .{ .tv_sec = 123, .tv_usec = 456789 },
+    };
+
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&c_struct), std.mem.asBytes(&zig_struct));
+}
 
 // Those values are documented in linux doc:
 // https://www.kernel.org/doc/html/v4.15/input/event-codes.html#ev-key
@@ -39,7 +92,7 @@ pub const LayerzAction = union(LayerzActionKind) {
     transparent: LayerzActionTransparent,
 };
 
-pub const Layerz = [256]LayerzAction;
+pub const Layer = [256]LayerzAction;
 
 pub fn resolve(comptime keyname: []const u8) u8 {
     const fullname = "KEY_" ++ keyname;
@@ -82,14 +135,14 @@ pub fn lh(comptime keyname: []const u8, layer: u8) LayerzAction {
 }
 
 /// Layout DSL: disable a key
-pub const x: LayerzAction = .{ .disabled = .{} };
+pub const xx: LayerzAction = .{ .disabled = .{} };
 
 /// Layout DSL: pass the key to the layer below
-pub const trans: LayerzAction = .{ .transparent = .{} };
+pub const __: LayerzAction = .{ .transparent = .{} };
 
-pub const PASSTHROUGH: Layerz = [_]LayerzAction{trans} ** 256;
+pub const PASSTHROUGH: Layer = [_]LayerzAction{__} ** 256;
 
-pub fn map(layer: *Layerz, comptime src_key: []const u8, action: LayerzAction) void {
+pub fn map(layer: *Layer, comptime src_key: []const u8, action: LayerzAction) void {
     layer[resolve(src_key)] = action;
 }
 
@@ -241,13 +294,14 @@ pub const KeyboardState = struct {
                 var delayed = keyboard.stack.addOneAssumeCapacity();
                 delayed.* = event.*;
                 delayed.code = layer_hold.key;
-                std.log.debug("Maybe we are holding a layer: {}. Delay event: {}", .{ layer_hold, event });
+                std.log.debug("Maybe we are holding a layer: {}. Delay event: {}", .{ layer_hold.layer, event });
             },
             KEY_RELEASE => {
                 keyboard.delayed_handler = null;
                 if (keyboard.layer == layer_hold.layer) {
-                    std.log.debug("Disabling layer: {} on {}", .{ layer_hold, event });
+                    std.log.debug("Disabling layer: {} on {}", .{ layer_hold.layer, event });
                     keyboard.layer = keyboard.base_layer;
+                    // TODO: we should release key pressed while on this layer
                 } else {
                     keyboard.handle_tap(.{ .key = layer_hold.key }, event);
                 }
@@ -265,7 +319,7 @@ pub const KeyboardState = struct {
         const layer_hold = switch (action) {
             .layer_hold => |val| val,
             else => {
-                std.log.warn("Inconsistent internal state, expected a Layer_Hold action on top of the stack, but found: {}", .{action});
+                std.log.warn("Inconsistent internal state, expected a LayerHold action on top of the stack, but found: {}", .{action});
                 keyboard.delayed_handler = null;
                 keyboard.consume_pressed();
                 return;
@@ -274,9 +328,9 @@ pub const KeyboardState = struct {
         if (event.code == next_event.code) {
             // Another event on the layer key
             if (next_event.value == KEY_RELEASE) {
-                if (delta_ms(next_event, event) < layer_hold.delay_ms) {
+                if (delta_ms(event, next_event) < layer_hold.delay_ms) {
                     // We have just tapped on the layer button, emit the key
-                    std.log.debug("Quick tap on layer {}", .{layer_hold});
+                    std.log.warn("Quick tap on layer {})", .{layer_hold});
                     keyboard.writer(&event);
                     keyboard.handle_tap(.{ .key = layer_hold.key }, &next_event);
                 } else {
@@ -288,20 +342,18 @@ pub const KeyboardState = struct {
         } else {
             if (next_event.value == KEY_PRESS) {
                 // TODO: handle quick typing ?
-                // if (delta_ms(next_event, event) > layer_hold.delay_ms) ...
+                // if (delta_ms(event, next_event) > layer_hold.delay_ms) ...
 
                 std.log.debug("Holding layer {}", .{layer_hold});
                 // We are holding the layer !
                 keyboard.layer = layer_hold.layer;
-                // Call regular key handling code with the correct layer
-                const next_action = keyboard.layout[keyboard.layer][next_event.code];
-                keyboard.handle_action(next_action, &next_event);
-                // Disable handle_layer_hold_second
+                // Disable handle_layer_hold_second, resume normal key handling
                 keyboard.delayed_handler = null;
                 _ = keyboard.stack.pop();
-            } else {
-                // ignore key releases;
             }
+            // Call regular key handling code with the new layer
+            const next_action = keyboard.layout[keyboard.layer][next_event.code];
+            keyboard.handle_action(next_action, &next_event);
         }
     }
 
@@ -311,7 +363,6 @@ pub const KeyboardState = struct {
     /// Do the action from the base layer instead.
     /// If we are already on the base layer, just forward the input event.
     fn handle_transparent(keyboard: *Self, transparent: LayerzActionTransparent, event: *const InputEvent) void {
-        std.log.debug("({d}-{d})", .{ event.code, event.value });
         if (keyboard.layer == keyboard.base_layer) {
             keyboard.writer(event);
         } else {
@@ -434,7 +485,7 @@ test "Layer toggle" {
     // On second layer: map key "Q" to "A"
     map(&layer1, "Q", k("A"));
 
-    var layout = [_]Layerz{ layer0, layer1 };
+    var layout = [_]Layer{ layer0, layer1 };
     var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
     keyboard.init();
 
@@ -476,7 +527,7 @@ test "Layer toggle" {
 test "PASSTHROUGH layout passes all keyboard events through" {
     test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
     defer test_outputs.deinit();
-    const layout = [_]Layerz{PASSTHROUGH};
+    const layout = [_]Layer{PASSTHROUGH};
     var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
     keyboard.init();
 
@@ -500,10 +551,10 @@ test "Transparent pass to layer below" {
     map(&layer0, "W", k("Z"));
     map(&layer0, "TAB", lt(1));
     // On second layer: "Q" is transparent, "W" is "W"
-    map(&layer1, "Q", trans);
+    map(&layer1, "Q", __);
     map(&layer1, "W", k("W"));
 
-    var layout = [_]Layerz{ layer0, layer1 };
+    var layout = [_]Layer{ layer0, layer1 };
     var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
     keyboard.init();
 
@@ -544,7 +595,7 @@ test "Layer Hold" {
     // On second layer: map key "Q" to "A"
     map(&layer1, "Q", k("A"));
 
-    var layout = [_]Layerz{ layer0, layer1 };
+    var layout = [_]Layer{ layer0, layer1 };
     var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
     keyboard.init();
 
@@ -563,6 +614,18 @@ test "Layer Hold" {
         // back to layer 0
         input_event(KEY_PRESS, "Q", 0.8),
         input_event(KEY_RELEASE, "Q", 0.9),
+
+        // Press layer 1 while there is an ongoing keypress
+        input_event(KEY_PRESS, "Q", 1.0),
+        input_event(KEY_PRESS, "TAB", 1.1),
+        input_event(KEY_RELEASE, "Q", 1.2),
+        input_event(KEY_RELEASE, "TAB", 1.6),
+
+        // Release layer 1 while there is an ongoing keypress
+        input_event(KEY_PRESS, "TAB", 2.0),
+        input_event(KEY_PRESS, "Q", 2.5),
+        input_event(KEY_RELEASE, "TAB", 2.6),
+        input_event(KEY_RELEASE, "Q", 2.7),
     };
     for (inputs) |*event| keyboard.handle(event);
 
@@ -575,6 +638,14 @@ test "Layer Hold" {
         input_event(KEY_RELEASE, "A", 0.6),
         input_event(KEY_PRESS, "Q", 0.8),
         input_event(KEY_RELEASE, "Q", 0.9),
+
+        // Press layer 1 while there is an ongoing keypress
+        input_event(KEY_PRESS, "Q", 1.0),
+        input_event(KEY_RELEASE, "Q", 1.2),
+
+        // Release the original key
+        input_event(KEY_PRESS, "A", 2.5),
+        input_event(KEY_RELEASE, "A", 2.7),
     };
     try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
 }
@@ -587,6 +658,10 @@ fn testing_write_event(event: *const InputEvent) void {
 
 /// Shortcut to create an InputEvent, using float for timestamp.
 fn input_event(event: u8, comptime keyname: []const u8, time: f64) InputEvent {
+    if (time < 1000) {
+        // we are using fake timestamp, use a fake start time.
+        _start_time = 0;
+    }
     const time_modf = math.modf(time);
     const seconds = math.lossyCast(u32, time_modf.ipart);
     const micro_seconds = math.lossyCast(u32, time_modf.fpart * 1e6);
@@ -633,4 +708,83 @@ test "delta_ms" {
     try std.testing.expectEqual(@as(i32, 0), _input_delta_ms(123.456, 123.45650));
     try std.testing.expectEqual(@as(i32, -1), _input_delta_ms(123.45701, 123.456));
     try std.testing.expectEqual(@as(i32, 1000), _input_delta_ms(123, 124));
+}
+
+// const Layerz = struct {
+//     layers: std.ArrayList(Layer),
+
+//     fn init(alloc: std.mem.Allocator, n: u8) Layerz {
+//         var layers = std.ArrayList(Layer).init(alloc);
+//         var i: u8 = 0;
+//         while (i < n) : (i += 1) {
+//             layers.addOne() = PASSTHROUGH;
+//         }
+//         return .{ .layers = layers };
+//     }
+// };
+
+pub fn ansi(
+    number_row: [13]LayerzAction,
+    top_row: [14]LayerzAction,
+    middle_row: [13]LayerzAction,
+    bottom_row: [12]LayerzAction,
+) Layer {
+    var layer = PASSTHROUGH;
+    map(&layer, "GRAVE", number_row[0]);
+    map(&layer, "1", number_row[1]);
+    map(&layer, "2", number_row[2]);
+    map(&layer, "3", number_row[3]);
+    map(&layer, "4", number_row[4]);
+    map(&layer, "5", number_row[5]);
+    map(&layer, "6", number_row[6]);
+    map(&layer, "7", number_row[7]);
+    map(&layer, "8", number_row[8]);
+    map(&layer, "9", number_row[9]);
+    map(&layer, "0", number_row[10]);
+    map(&layer, "MINUS", number_row[11]);
+    map(&layer, "EQUAL", number_row[12]);
+
+    map(&layer, "TAB", top_row[0]);
+    map(&layer, "Q", top_row[1]);
+    map(&layer, "W", top_row[2]);
+    map(&layer, "E", top_row[3]);
+    map(&layer, "R", top_row[4]);
+    map(&layer, "T", top_row[5]);
+    map(&layer, "Y", top_row[6]);
+    map(&layer, "U", top_row[7]);
+    map(&layer, "I", top_row[8]);
+    map(&layer, "O", top_row[9]);
+    map(&layer, "P", top_row[10]);
+    map(&layer, "LEFTBRACE", top_row[11]);
+    map(&layer, "RIGHTBRACE", top_row[12]);
+    map(&layer, "BACKSLASH", top_row[13]);
+
+    map(&layer, "CAPSLOCK", middle_row[0]);
+    map(&layer, "A", middle_row[1]);
+    map(&layer, "S", middle_row[2]);
+    map(&layer, "D", middle_row[3]);
+    map(&layer, "F", middle_row[4]);
+    map(&layer, "G", middle_row[5]);
+    map(&layer, "H", middle_row[6]);
+    map(&layer, "J", middle_row[7]);
+    map(&layer, "K", middle_row[8]);
+    map(&layer, "L", middle_row[9]);
+    map(&layer, "SEMICOLON", middle_row[10]);
+    map(&layer, "APOSTROPHE", middle_row[11]);
+    map(&layer, "ENTER", middle_row[12]);
+
+    map(&layer, "LEFTSHIFT", bottom_row[0]);
+    map(&layer, "Z", bottom_row[1]);
+    map(&layer, "X", bottom_row[2]);
+    map(&layer, "C", bottom_row[3]);
+    map(&layer, "V", bottom_row[4]);
+    map(&layer, "B", bottom_row[5]);
+    map(&layer, "N", bottom_row[6]);
+    map(&layer, "M", bottom_row[7]);
+    map(&layer, "COMMA", bottom_row[8]);
+    map(&layer, "DOT", bottom_row[9]);
+    map(&layer, "SLASH", bottom_row[10]);
+    map(&layer, "RIGHTSHIFT", bottom_row[11]);
+
+    return layer;
 }
