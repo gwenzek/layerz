@@ -10,7 +10,7 @@ var _start_time: i64 = -1;
 /// This is a port of linux input_event struct.
 /// The C code has different way of storing the time depending on the machine
 /// this isn't currently supported in the Zig
-const InputEvent = extern struct {
+pub const InputEvent = extern struct {
     time: linux.timeval,
     type: u16,
     code: u16,
@@ -154,7 +154,7 @@ const syn_pause = InputEvent{
     .time = undefined,
 };
 
-pub const EventWriter = fn (event: *const InputEvent) void;
+pub const EventWriter = fn (event: InputEvent) void;
 pub const DelayedHandler = fn (
     keyboard: *KeyboardState,
     event: InputEvent,
@@ -172,7 +172,7 @@ pub const KeyboardState = struct {
     // we should have an allocator, there are more thing to store
     _stack_buffer: [32 * @sizeOf(InputEvent)]u8 = undefined,
     stack: std.ArrayListUnmanaged(InputEvent) = undefined,
-    key_state: [NUM_KEYS]u8 = [_]u8{0xff} ** NUM_KEYS,
+    key_state: [NUM_KEYS]u8 = [_]u8{0} ** NUM_KEYS,
 
     const Self = @This();
 
@@ -182,7 +182,7 @@ pub const KeyboardState = struct {
         self.stack.ensureTotalCapacity(&alloc.allocator, 16) catch unreachable;
     }
 
-    pub fn handle(keyboard: *Self, input: *const InputEvent) void {
+    pub fn handle(keyboard: *Self, input: InputEvent) void {
         if (input.type == linux.EV_MSC and input.code == linux.MSC_SCAN)
             return;
 
@@ -201,7 +201,7 @@ pub const KeyboardState = struct {
         if (stack_len > 0) {
             if (keyboard.delayed_handler) |handler| {
                 const last_input = keyboard.stack.items[stack_len - 1];
-                handler.*(keyboard, last_input, input.*);
+                handler.*(keyboard, last_input, input);
                 return;
             }
         }
@@ -210,7 +210,7 @@ pub const KeyboardState = struct {
         keyboard.handle_action(action, input);
     }
 
-    fn resolve_action(keyboard: *Self, input: *const InputEvent) LayerzAction {
+    fn resolve_action(keyboard: *Self, input: InputEvent) LayerzAction {
         // get the layer on which this event happen
         const key_layer = switch (input.value) {
             KEY_REPEAT => {
@@ -233,7 +233,7 @@ pub const KeyboardState = struct {
         return keyboard.layout[key_layer][input.code];
     }
 
-    fn handle_action(keyboard: *Self, action: LayerzAction, input: *const InputEvent) void {
+    fn handle_action(keyboard: *Self, action: LayerzAction, input: InputEvent) void {
         // TODO: generate this switch ?
         switch (action) {
             .tap => |val| keyboard.handle_tap(val, input),
@@ -245,47 +245,47 @@ pub const KeyboardState = struct {
         }
     }
 
-    fn handle_tap(keyboard: *Self, tap: LayerzActionTap, input: *const InputEvent) void {
-        var output = input.*;
+    fn handle_tap(keyboard: *Self, tap: LayerzActionTap, input: InputEvent) void {
+        var output = input;
         output.code = tap.key;
-        keyboard.writer(&output);
+        keyboard.writer(output);
     }
 
     /// Output two keys. This is useful for modifiers.
     // TODO: support more than one mod
-    fn handle_mod_tap(keyboard: *Self, tap: LayerzActionModTap, input: *const InputEvent) void {
-        var output = input.*;
+    fn handle_mod_tap(keyboard: *Self, tap: LayerzActionModTap, input: InputEvent) void {
+        var output = input;
         output.code = tap.key;
         var mod_press: InputEvent = output;
         mod_press.code = tap.mod;
         if (input.value == KEY_PRESS) {
             // First press the modifier then the key.
-            keyboard.writer(&mod_press);
-            keyboard.writer(&output);
+            keyboard.writer(mod_press);
+            keyboard.writer(output);
 
             // Delay the modifier release to the next key press.
             var mod_release = keyboard.stack.addOneAssumeCapacity();
             mod_release.* = mod_press;
             mod_release.value = KEY_RELEASE;
         } else if (input.value == KEY_RELEASE) {
-            keyboard.writer(&output);
+            keyboard.writer(output);
             var i = @intCast(u8, keyboard.stack.items.len);
             // Release the mod if it hasn't been done before.
             while (i > 0) : (i -= 1) {
                 var mod_release = keyboard.stack.items[i - 1];
                 if (mod_release.code == tap.mod) {
-                    keyboard.writer(&mod_release);
+                    keyboard.writer(mod_release);
                     _ = keyboard.stack.orderedRemove(i - 1);
                 }
             }
         } else {
-            keyboard.writer(&output);
+            keyboard.writer(output);
         }
     }
 
     /// Switch between layers
     // TODO: could we have a startup check to see if we can get stuck on a layer ?
-    fn handle_layer_toggle(keyboard: *Self, layer_toggle: LayerzActionLayerToggle, event: *const InputEvent) void {
+    fn handle_layer_toggle(keyboard: *Self, layer_toggle: LayerzActionLayerToggle, event: InputEvent) void {
         switch (event.value) {
             KEY_PRESS => {
                 if (keyboard.layer != layer_toggle.layer) {
@@ -298,13 +298,13 @@ pub const KeyboardState = struct {
         }
     }
 
-    fn handle_layer_hold(keyboard: *Self, layer_hold: LayerzActionLayerHold, event: *const InputEvent) void {
+    fn handle_layer_hold(keyboard: *Self, layer_hold: LayerzActionLayerHold, event: InputEvent) void {
         switch (event.value) {
             KEY_PRESS => {
                 keyboard.maybe_layer = layer_hold;
                 keyboard.delayed_handler = &handle_layer_hold_second;
                 var delayed = keyboard.stack.addOneAssumeCapacity();
-                delayed.* = event.*;
+                delayed.* = event;
                 delayed.code = layer_hold.key;
                 std.log.debug("Maybe we are holding a layer: {}. Delay event: {}", .{ layer_hold.layer, event });
             },
@@ -313,7 +313,6 @@ pub const KeyboardState = struct {
                 if (keyboard.layer == layer_hold.layer) {
                     std.log.debug("Disabling layer: {} on {}", .{ layer_hold.layer, event });
                     keyboard.layer = keyboard.base_layer;
-                    // TODO: we should release key pressed while on this layer
                 } else {
                     keyboard.handle_tap(.{ .key = layer_hold.key }, event);
                 }
@@ -342,9 +341,9 @@ pub const KeyboardState = struct {
             if (next_event.value == KEY_RELEASE) {
                 if (delta_ms(event, next_event) < layer_hold.delay_ms) {
                     // We have just tapped on the layer button, emit the key
-                    std.log.warn("Quick tap on layer {})", .{layer_hold});
-                    keyboard.writer(&event);
-                    keyboard.handle_tap(.{ .key = layer_hold.key }, &next_event);
+                    std.log.debug("Quick tap on layer {})", .{layer_hold});
+                    keyboard.writer(event);
+                    keyboard.handle_tap(.{ .key = layer_hold.key }, next_event);
                 } else {
                     // We have been holding for a long time, do nothing
                 }
@@ -364,17 +363,17 @@ pub const KeyboardState = struct {
                 _ = keyboard.stack.pop();
             }
             // Call regular key handling code with the new layer
-            const next_action = keyboard.resolve_action(&next_event);
-            keyboard.handle_action(next_action, &next_event);
+            const next_action = keyboard.resolve_action(next_event);
+            keyboard.handle_action(next_action, next_event);
         }
     }
 
     /// Do nothing.
-    fn handle_disabled(keyboard: *Self, layer_hold: LayerzActionDisabled, event: *const InputEvent) void {}
+    fn handle_disabled(keyboard: *Self, layer_hold: LayerzActionDisabled, event: InputEvent) void {}
 
     /// Do the action from the base layer instead.
     /// If we are already on the base layer, just forward the input event.
-    fn handle_transparent(keyboard: *Self, transparent: LayerzActionTransparent, event: *const InputEvent) void {
+    fn handle_transparent(keyboard: *Self, transparent: LayerzActionTransparent, event: InputEvent) void {
         if (keyboard.layer == keyboard.base_layer) {
             keyboard.writer(event);
         } else {
@@ -392,7 +391,7 @@ pub const KeyboardState = struct {
         var input: InputEvent = undefined;
         const buffer = std.mem.asBytes(&input);
         while (io.getStdIn().read(buffer)) {
-            keyboard.handle(&input);
+            keyboard.handle(input);
         } else |err| {
             std.debug.panic("Couldn't read event from stdin", .{});
         }
@@ -401,13 +400,13 @@ pub const KeyboardState = struct {
     pub fn consume_pressed(keyboard: *KeyboardState) void {
         while (keyboard.stack.items.len > 0) {
             var delayed_event = keyboard.stack.pop();
-            keyboard.writer(&delayed_event);
+            keyboard.writer(delayed_event);
         }
     }
 };
 
-pub fn write_event_to_stdout(event: *const InputEvent) void {
-    const buffer = std.mem.asBytes(event);
+pub fn write_event_to_stdout(event: InputEvent) void {
+    const buffer = std.mem.asBytes(&event);
     if (event.type == linux.EV_KEY) {
         std.log.debug("wrote {}", .{event});
     }
@@ -443,7 +442,7 @@ test "Key remap with modifier" {
         input_event(KEY_PRESS, "Q", 0.0),
         input_event(KEY_RELEASE, "Q", 0.1),
     };
-    for (inputs) |*event| keyboard.handle(event);
+    for (inputs) |input| keyboard.handle(input);
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "LEFTSHIFT", 0.0),
@@ -472,7 +471,7 @@ test "Modifiers don't leak to next key" {
         input_event(KEY_RELEASE, "W", 0.2),
         input_event(KEY_RELEASE, "Q", 0.3),
     };
-    for (inputs) |*event| keyboard.handle(event);
+    for (inputs) |input| keyboard.handle(input);
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "LEFTSHIFT", 0.0),
@@ -521,7 +520,7 @@ test "Layer toggle" {
         input_event(KEY_RELEASE, "TAB", 1.2),
         input_event(KEY_RELEASE, "Q", 1.3),
     };
-    for (inputs) |*event| keyboard.handle(event);
+    for (inputs) |input| keyboard.handle(input);
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "Q", 0.0),
@@ -536,6 +535,21 @@ test "Layer toggle" {
     try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
 }
 
+test "Handle unexpected events" {
+    test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
+    defer test_outputs.deinit();
+    const layout = [_]Layer{PASSTHROUGH};
+    var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
+    keyboard.init();
+
+    const inputs = [_]InputEvent{
+        input_event(KEY_RELEASE, "Q", 0.1),
+    };
+    for (inputs) |input| keyboard.handle(input);
+
+    try std.testing.expectEqualSlices(InputEvent, &inputs, test_outputs.items);
+}
+
 test "PASSTHROUGH layout passes all keyboard events through" {
     test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
     defer test_outputs.deinit();
@@ -547,7 +561,7 @@ test "PASSTHROUGH layout passes all keyboard events through" {
         input_event(KEY_PRESS, "Q", 0.0),
         input_event(KEY_RELEASE, "Q", 0.1),
     };
-    for (inputs) |*event| keyboard.handle(event);
+    for (inputs) |input| keyboard.handle(input);
 
     try std.testing.expectEqualSlices(InputEvent, &inputs, test_outputs.items);
 }
@@ -583,7 +597,7 @@ test "Transparent pass to layer below" {
         input_event(KEY_PRESS, "Q", 0.6),
         input_event(KEY_PRESS, "W", 0.7),
     };
-    for (inputs) |*event| keyboard.handle(event);
+    for (inputs) |input| keyboard.handle(input);
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "A", 0.0),
@@ -639,7 +653,7 @@ test "Layer Hold" {
         input_event(KEY_RELEASE, "TAB", 2.6),
         input_event(KEY_RELEASE, "Q", 2.7),
     };
-    for (inputs) |*event| keyboard.handle(event);
+    for (inputs) |input| keyboard.handle(input);
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "Q", 0.0),
@@ -664,8 +678,8 @@ test "Layer Hold" {
 
 // TODO: how can we avoid the global variable ?
 var test_outputs: std.ArrayList(InputEvent) = undefined;
-fn testing_write_event(event: *const InputEvent) void {
-    test_outputs.append(event.*) catch unreachable;
+fn testing_write_event(event: InputEvent) void {
+    test_outputs.append(event) catch unreachable;
 }
 
 /// Shortcut to create an InputEvent, using float for timestamp.
