@@ -81,7 +81,6 @@ const LayerzActionLayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 200 }
 const LayerzActionLayerToggle = struct { layer: u8 };
 const LayerzActionDisabled = struct {};
 const LayerzActionTransparent = struct {};
-// TODO: add "transparent" and "disabled" actions
 
 pub const LayerzAction = union(LayerzActionKind) {
     tap: LayerzActionTap,
@@ -92,7 +91,8 @@ pub const LayerzAction = union(LayerzActionKind) {
     transparent: LayerzActionTransparent,
 };
 
-pub const Layer = [256]LayerzAction;
+const NUM_KEYS = 256;
+pub const Layer = [NUM_KEYS]LayerzAction;
 
 pub fn resolve(comptime keyname: []const u8) u8 {
     const fullname = "KEY_" ++ keyname;
@@ -140,7 +140,7 @@ pub const xx: LayerzAction = .{ .disabled = .{} };
 /// Layout DSL: pass the key to the layer below
 pub const __: LayerzAction = .{ .transparent = .{} };
 
-pub const PASSTHROUGH: Layer = [_]LayerzAction{__} ** 256;
+pub const PASSTHROUGH: Layer = [_]LayerzAction{__} ** NUM_KEYS;
 
 pub fn map(layer: *Layer, comptime src_key: []const u8, action: LayerzAction) void {
     layer[resolve(src_key)] = action;
@@ -162,15 +162,17 @@ pub const DelayedHandler = fn (
 ) void;
 
 pub const KeyboardState = struct {
-    layout: []const [256]LayerzAction,
+    layout: []const [NUM_KEYS]LayerzAction,
     writer: EventWriter = write_event_to_stdout,
 
     base_layer: u8 = 0,
     layer: u8 = 0,
     maybe_layer: LayerzActionLayerHold = undefined,
     delayed_handler: ?*const DelayedHandler = null,
+    // we should have an allocator, there are more thing to store
     _stack_buffer: [32 * @sizeOf(InputEvent)]u8 = undefined,
     stack: std.ArrayListUnmanaged(InputEvent) = undefined,
+    key_state: [NUM_KEYS]u8 = [_]u8{0xff} ** NUM_KEYS,
 
     const Self = @This();
 
@@ -189,7 +191,7 @@ pub const KeyboardState = struct {
         //     keyboard.consume_pressed();
 
         // forward anything that is not a key event, including SYNs
-        if (input.type != linux.EV_KEY) {
+        if (input.type != linux.EV_KEY or input.code >= NUM_KEYS) {
             keyboard.writer(input);
             return;
         }
@@ -204,21 +206,31 @@ pub const KeyboardState = struct {
             }
         }
 
-        // consume all taps that are incomplete
-        if (input.value == KEY_PRESS)
-            keyboard.consume_pressed();
-
-        if (input.value == KEY_REPEAT) {
-            // TODO: check if it's right to swallow repeats event
-            // linux console, X, wayland handles repeat
-            return;
-        }
-        if (input.value != KEY_PRESS and input.value != KEY_RELEASE and input.value != KEY_REPEAT) {
-            std.log.warn("unexpected .value={d} .code={d}, doing nothing", .{ input.value, input.code });
-            return;
-        }
-        const action = keyboard.layout[keyboard.layer][input.code];
+        const action = keyboard.resolve_action(input);
         keyboard.handle_action(action, input);
+    }
+
+    fn resolve_action(keyboard: *Self, input: *const InputEvent) LayerzAction {
+        // get the layer on which this event happen
+        const key_layer = switch (input.value) {
+            KEY_REPEAT => {
+                // TODO: check if it's right to swallow repeats event
+                // linux console, X, wayland handles repeat
+                return xx;
+            },
+            KEY_PRESS => keyboard.layer,
+            KEY_RELEASE => keyboard.key_state[input.code],
+            else => {
+                std.log.warn("ignoring unkown event {}", .{input});
+                return xx;
+            },
+        };
+        if (input.value == KEY_PRESS) {
+            // consume all taps that are incomplete
+            keyboard.consume_pressed();
+        }
+        keyboard.key_state[input.code] = key_layer;
+        return keyboard.layout[key_layer][input.code];
     }
 
     fn handle_action(keyboard: *Self, action: LayerzAction, input: *const InputEvent) void {
@@ -352,7 +364,7 @@ pub const KeyboardState = struct {
                 _ = keyboard.stack.pop();
             }
             // Call regular key handling code with the new layer
-            const next_action = keyboard.layout[keyboard.layer][next_event.code];
+            const next_action = keyboard.resolve_action(&next_event);
             keyboard.handle_action(next_action, &next_event);
         }
     }
@@ -419,11 +431,11 @@ test "Key remap with modifier" {
     test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
     defer test_outputs.deinit();
 
-    var layer: [256]LayerzAction = PASSTHROUGH;
+    var layer: [NUM_KEYS]LayerzAction = PASSTHROUGH;
     // Map "Q" to "(" (shift+9)
     map(&layer, "Q", s("9"));
 
-    var layout = [_][256]LayerzAction{layer};
+    var layout = [_][NUM_KEYS]LayerzAction{layer};
     var keyboard = KeyboardState{ .layout = &.{layer}, .writer = testing_write_event };
     keyboard.init();
 
@@ -446,11 +458,11 @@ test "Modifiers don't leak to next key" {
     test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
     defer test_outputs.deinit();
 
-    var layer: [256]LayerzAction = PASSTHROUGH;
+    var layer: [NUM_KEYS]LayerzAction = PASSTHROUGH;
     // Map "Q" to "(" (shift+9)
     map(&layer, "Q", s("9"));
 
-    var layout = [_][256]LayerzAction{layer};
+    var layout = [_][NUM_KEYS]LayerzAction{layer};
     var keyboard = KeyboardState{ .layout = &.{layer}, .writer = testing_write_event };
     keyboard.init();
 
