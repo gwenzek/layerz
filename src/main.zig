@@ -21,7 +21,8 @@ pub fn main() anyerror!void {
     // Here you can describe your different layers.
     var layer = PASSTHROUGH;
     map(&layer, "SPACE", lh("SPACE", 1));
-    map(&layer, "LEFTSHIFT", k("LEFTCTRL"));
+    map(&layer, "LEFTSHIFT", k("LEFTMETA"));
+    map(&layer, "LEFTALT", k("LEFTCTRL"));
     map(&layer, "CAPSLOCK", k("LEFTSHIFT"));
     const layout = [_]Layer{ layer, mod_layer };
     var keyboard = KeyboardState{ .layout = &layout };
