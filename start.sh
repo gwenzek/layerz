@@ -1,9 +1,11 @@
-KEYSEEBEE=/dev/input/by-id/usb-RIIR_Task_Force_Keyberon_0.2.0-event-kbd
 LAPTOP_KEEB=/dev/input/by-path/platform-i8042-serio-0-event-kbd
 
-DEVNODE=$KEYSEEBEE
-DEVNODE=$LAPTOP_KEEB
+KEEB=$LAPTOP_KEEB
 
-zig build && \
-  intercept -g $DEVNODE | zig-out/bin/layerz | uinput -d $DEVNODE
-4
+# zig build && \
+#   intercept -g $KEEB | zig-out/bin/layerz | uinput -d $KEEB
+zig build -Drelease-safe && \
+  sudo intercept -g $KEEB | zig-out/bin/latency
+
+zig build -Drelease-safe && \
+  sudo intercept -g $KEEB | zig-out/bin/layerz | zig-out/bin/latency

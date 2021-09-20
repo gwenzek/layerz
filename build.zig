@@ -17,6 +17,12 @@ pub fn build(b: *std.build.Builder) void {
     exe.setBuildMode(mode);
     exe.install();
 
+    const latency = b.addExecutable("latency", "src/latency.zig");
+    latency.addIncludeDir("/usr/include/");
+    latency.setTarget(target);
+    latency.setBuildMode(mode);
+    latency.install();
+
     const tests = b.addTest("src/layerz.zig");
     tests.addIncludeDir("/usr/include/");
     b.step("test", "Tests").dependOn(&tests.step);
