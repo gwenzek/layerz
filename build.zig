@@ -20,7 +20,10 @@ pub fn build(b: *std.build.Builder) void {
     const latency = b.addExecutable("latency", "src/latency.zig");
     latency.addIncludeDir("/usr/include/");
     latency.setTarget(target);
-    latency.setBuildMode(mode);
+    // We want the latency measurement tool to be as fast as possible,
+    // and to have it's performance constistent over runs.
+    latency.setBuildMode(std.builtin.Mode.ReleaseFast);
+    // latency.setBuildMode(std.builtin.Mode.Debug);
     latency.install();
 
     const tests = b.addTest("src/layerz.zig");
