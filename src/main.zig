@@ -24,8 +24,8 @@ pub fn main() anyerror!void {
     map(&layer, "LEFTSHIFT", k("LEFTMETA"));
     map(&layer, "LEFTALT", k("LEFTCTRL"));
     map(&layer, "CAPSLOCK", k("LEFTSHIFT"));
-    const layout = [_]Layer{ layer, mod_layer };
-    var keyboard = KeyboardState{ .layout = &layout };
+
+    var keyboard = KeyboardState{ .layout = &[_]Layer{ layer, mod_layer } };
     keyboard.init();
     keyboard.loop();
 }

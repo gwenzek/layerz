@@ -2,9 +2,8 @@
 const std = @import("std");
 const io = std.io;
 const math = std.math;
-const linux = @cImport({
-    @cInclude("linux/input.h");
-});
+const log = std.log;
+pub const linux = @cImport(@cInclude("linux/input.h"));
 
 var _start_time: i64 = -1;
 /// This is a port of linux input_event struct.
@@ -31,7 +30,7 @@ pub const InputEvent = extern struct {
                 KEY_RELEASE => "KEY_RELEASE",
                 KEY_REPEAT => "KEY_REPEAT",
                 else => {
-                    try std.fmt.format(writer, "{{ {d} {d} ({d:.3}) }}", .{ input.value, input.code, time });
+                    try std.fmt.format(writer, "{{ EV_KEY({d}, {d}) ({d:.3}) }}", .{ input.value, input.code, time });
                     return;
                 },
             };
@@ -57,7 +56,11 @@ test "InputEvent matches input_event byte by byte" {
         .time = .{ .tv_sec = 123, .tv_usec = 456789 },
     };
 
-    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&c_struct), std.mem.asBytes(&zig_struct));
+    try std.testing.expectEqualSlices(
+        u8,
+        std.mem.asBytes(&c_struct),
+        std.mem.asBytes(&zig_struct),
+    );
 }
 
 // Those values are documented in linux doc:
@@ -120,6 +123,13 @@ pub fn s(comptime keyname: []const u8) LayerzAction {
     };
 }
 
+/// Layout DSL: tap altgr (right alt) and the given key. Useful for inputing localized chars.
+pub fn altgr(comptime keyname: []const u8) LayerzAction {
+    return .{
+        .mod_tap = .{ .key = resolve(keyname), .mod = linux.KEY_RIGHTALT },
+    };
+}
+
 /// Layout DSL: toggle a layer
 pub fn lt(layer: u8) LayerzAction {
     return .{
@@ -177,9 +187,11 @@ pub const KeyboardState = struct {
     const Self = @This();
 
     pub fn init(self: *Self) void {
+        // TODO: emit Reset event
         var alloc = std.heap.FixedBufferAllocator.init(&self._stack_buffer);
         self.stack = std.ArrayListUnmanaged(InputEvent){};
         self.stack.ensureTotalCapacity(&alloc.allocator, 16) catch unreachable;
+        // TODO: should we resolve the transparent actions now ?
     }
 
     pub fn handle(keyboard: *Self, input: InputEvent) void {
@@ -226,10 +238,13 @@ pub const KeyboardState = struct {
             },
         };
         if (input.value == KEY_PRESS) {
-            // consume all taps that are incomplete
+            // release delayed events
             keyboard.consume_pressed();
         }
         keyboard.key_state[input.code] = key_layer;
+        if (input.code == resolve("CAPSLOCK")) {
+            std.log.debug("CAPSLOCK is on layer {}", .{key_layer});
+        }
         return keyboard.layout[key_layer][input.code];
     }
 
@@ -369,19 +384,20 @@ pub const KeyboardState = struct {
     }
 
     /// Do nothing.
-    fn handle_disabled(keyboard: *Self, layer_hold: LayerzActionDisabled, event: InputEvent) void {}
+    fn handle_disabled(keyboard: *const Self, layer_hold: LayerzActionDisabled, event: InputEvent) void {}
 
     /// Do the action from the base layer instead.
     /// If we are already on the base layer, just forward the input event.
     fn handle_transparent(keyboard: *Self, transparent: LayerzActionTransparent, event: InputEvent) void {
-        if (keyboard.layer == keyboard.base_layer) {
+        const key_layer = keyboard.key_state[event.code];
+        if (key_layer == keyboard.base_layer) {
             keyboard.writer(event);
         } else {
-            const action = keyboard.layout[keyboard.base_layer][event.code];
-            switch (action) {
+            const base_action = keyboard.layout[keyboard.base_layer][event.code];
+            switch (base_action) {
                 // We need to handle transparent explicitly otherwise we create an infinite loop.
                 .transparent => keyboard.writer(event),
-                else => keyboard.handle_action(action, event),
+                else => keyboard.handle_action(base_action, event),
             }
         }
     }
@@ -410,6 +426,11 @@ pub fn write_event_to_stdout(event: InputEvent) void {
     if (event.type == linux.EV_KEY) {
         std.log.debug("wrote {}", .{event});
     }
+    if (event.code == resolve("CAPSLOCK")) {
+        std.log.warn("!!! writing CAPSLOCK !!!", .{});
+        std.debug.panic("CAPSLOCK shouldn't be emitted", .{});
+    }
+
     _ = io.getStdOut().write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
 }
 
@@ -676,6 +697,43 @@ test "Layer Hold" {
     try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
 }
 
+test "Layer Hold With Modifiers From Layer Below" {
+    test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
+    defer test_outputs.deinit();
+
+    var layer0 = PASSTHROUGH;
+    var layer1 = PASSTHROUGH;
+    map(&layer0, "TAB", lh("TAB", 1));
+    map(&layer0, "CAPSLOCK", k("LEFTSHIFT"));
+    map(&layer1, "F", k("RIGHTBRACE"));
+
+    var layout = [_]Layer{ layer0, layer1 };
+    var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
+    keyboard.init();
+
+    const inputs = [_]InputEvent{
+        // Hold "Layer1"+"CAPSLOCK"+"F"
+        // This should yield a shifted ]
+        input_event(KEY_PRESS, "TAB", 0.0),
+        input_event(KEY_PRESS, "CAPSLOCK", 0.1),
+        input_event(KEY_PRESS, "F", 0.2),
+        input_event(KEY_RELEASE, "F", 0.3),
+        input_event(KEY_REPEAT, "CAPSLOCK", 0.35),
+        input_event(KEY_RELEASE, "TAB", 0.4),
+        input_event(KEY_REPEAT, "CAPSLOCK", 0.45),
+        input_event(KEY_RELEASE, "CAPSLOCK", 0.5),
+    };
+    for (inputs) |input| keyboard.handle(input);
+
+    const expected = [_]InputEvent{
+        input_event(KEY_PRESS, "LEFTSHIFT", 0.1),
+        input_event(KEY_PRESS, "RIGHTBRACE", 0.2),
+        input_event(KEY_RELEASE, "RIGHTBRACE", 0.3),
+        input_event(KEY_RELEASE, "LEFTSHIFT", 0.5),
+    };
+    try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
+}
+
 // TODO: how can we avoid the global variable ?
 var test_outputs: std.ArrayList(InputEvent) = undefined;
 fn testing_write_event(event: InputEvent) void {
@@ -736,19 +794,7 @@ test "delta_ms" {
     try std.testing.expectEqual(@as(i32, 1000), _input_delta_ms(123, 124));
 }
 
-// const Layerz = struct {
-//     layers: std.ArrayList(Layer),
-
-//     fn init(alloc: std.mem.Allocator, n: u8) Layerz {
-//         var layers = std.ArrayList(Layer).init(alloc);
-//         var i: u8 = 0;
-//         while (i < n) : (i += 1) {
-//             layers.addOne() = PASSTHROUGH;
-//         }
-//         return .{ .layers = layers };
-//     }
-// };
-
+// Layout DSL: create a layer using the ANSI layout
 pub fn ansi(
     number_row: [13]LayerzAction,
     top_row: [14]LayerzAction,
