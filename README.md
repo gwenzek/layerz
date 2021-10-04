@@ -31,24 +31,31 @@ and the user experience need to be improved.
 3. [Install Zig with a package manager](https://github.com/ziglang/zig/wiki/Install-Zig-from-a-Package-Manager)
    This code was written with Zig 0.8.0.
 
-4. Run `sudo ./start.sh` from a terminal.
+4. Identify the name of the builting keyboard.
+   Run `ls /dev/input/by-path/` to find the name of the usb devices plugged 
+   in your laptop.
+
+5. Run `sudo ./start.sh $KEEB` from a terminal.
    This will build the utility and start intercepting the keyboard events.
    `sudo` is required for the interception.
-
-## Performance
-
-Those numbers varies run by run, and I guess which key you press.
-
-Intercept latency: 0.072 ms
-Intercept + LayerZ latency (release safe): 0.156 ms
-Intercept + LayerZ latency (release fast): 0.135 ms
-
-The difference between release safe and release fast isn't significant.
-TODO: make a script that only measure the latency of LayerZ on a 
-recorded set of keys
-TODO: this seems like a high latency to me. I should profile this.
+   If the keyboard is not behaving as you would like
+   close the terminal with the mouse :-)
 
 ## How to ?
+
+### How to debug issues
+
+The first thing to do is to build Layerz in debug mode.
+This will output the received events and the output.
+Sometimes the keyboard themselves don't send the correct input.
+For instance my laptop keyboard doesn't detect when "space", "capslock" and "f" 
+are pressed at the same time.
+
+### I see `libevdev_uinput_write_event failed: Success`
+
+This probably means that you can't write to this device,
+is it open in another terminal/process ?
+Run `pgrep uinput`.
 
 ### How to input a localized character
 
@@ -62,12 +69,29 @@ Note that not all applications receives the special characters from XKB.
 
 TODO: could we generate the XKB layout ourselves ?
 
+
+## Performance
+
+Those numbers varies run by run,
+and I guess depends on your layout and which key you press.
+
+Intercept latency: 0.072 ms
+Intercept + LayerZ latency (release safe): 0.156 ms
+Intercept + LayerZ latency (release fast): 0.135 ms
+
+The difference between release safe and release fast isn't significant.
+TODO: make a script that only measure the latency of LayerZ on a 
+recorded set of keys
+TODO: this seems like a high latency to me. I should profile this.
+
+
 ## Reference
 
 Features:
 - `k`: Remap a key to another key 
 - Remap a key to two keys (typically shift + key)
   - `s`: Remap a key to a shifted key
+  - `ctrl`: Remap a key to ctrl+key
   - `altgr`: Remap a key to a key + altgr. Useful for inputing localized chars.
 - `lt`: Layer toggle
 - `lh`: Layer hold

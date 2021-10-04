@@ -123,6 +123,13 @@ pub fn s(comptime keyname: []const u8) LayerzAction {
     };
 }
 
+/// Layout DSL: tap ctrl and the given key
+pub fn ctrl(comptime keyname: []const u8) LayerzAction {
+    return .{
+        .mod_tap = .{ .key = resolve(keyname), .mod = linux.KEY_LEFTCTRL },
+    };
+}
+
 /// Layout DSL: tap altgr (right alt) and the given key. Useful for inputing localized chars.
 pub fn altgr(comptime keyname: []const u8) LayerzAction {
     return .{
