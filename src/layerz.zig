@@ -8,7 +8,7 @@ pub const linux = @cImport(@cInclude("linux/input.h"));
 var _start_time: i64 = -1;
 /// This is a port of linux input_event struct.
 /// The C code has different way of storing the time depending on the machine
-/// this isn't currently supported in the Zig
+/// this isn't currently supported in the Zig.
 pub const InputEvent = extern struct {
     time: linux.timeval,
     type: u16,
@@ -76,14 +76,16 @@ const LayerzActionKind = enum {
     layer_toggle,
     disabled,
     transparent,
+    mouse_move,
 };
 
-const LayerzActionTap = struct { key: u8 };
-const LayerzActionModTap = struct { key: u8, mod: u8 };
-const LayerzActionLayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 200 };
-const LayerzActionLayerToggle = struct { layer: u8 };
-const LayerzActionDisabled = struct {};
-const LayerzActionTransparent = struct {};
+pub const LayerzActionTap = struct { key: u8 };
+pub const LayerzActionModTap = struct { key: u8, mod: u8 };
+pub const LayerzActionLayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 200 };
+pub const LayerzActionLayerToggle = struct { layer: u8 };
+pub const LayerzActionDisabled = struct {};
+pub const LayerzActionTransparent = struct {};
+pub const LayerzActionMouseMove = struct { key: u8 = linux.REL_X, stepX: i16 = 0, stepY: i16 = 0 };
 
 pub const LayerzAction = union(LayerzActionKind) {
     tap: LayerzActionTap,
@@ -92,6 +94,9 @@ pub const LayerzAction = union(LayerzActionKind) {
     layer_toggle: LayerzActionLayerToggle,
     disabled: LayerzActionDisabled,
     transparent: LayerzActionTransparent,
+    /// Move the mouse or wheel. This doesn't seem to work on my keyboard.
+    /// Maybe the device need to be registered with mouse capabilities ?
+    mouse_move: LayerzActionMouseMove,
 };
 
 const NUM_KEYS = 256;
@@ -163,10 +168,26 @@ pub fn map(layer: *Layer, comptime src_key: []const u8, action: LayerzAction) vo
     layer[resolve(src_key)] = action;
 }
 
-// TODO: understand when we need to send "syn" events
-const syn_pause = InputEvent{
+/// From kernel docs:
+/// Used to synchronize and separate events into packets of input data changes
+/// occurring at the same moment in time.
+/// For example, motion of a mouse may set the REL_X and REL_Y values for one motion,
+/// then emit a SYN_REPORT.
+/// The next motion will emit more REL_X and REL_Y values and send another SYN_REPORT.
+const sync_report = InputEvent{
     .type = linux.EV_SYN,
     .code = linux.SYN_REPORT,
+    .value = 0,
+    .time = undefined,
+};
+
+/// From kernel docs:
+/// Used to indicate buffer overrun in the evdev client’s event queue.
+/// Client should ignore all events up to and including next SYN_REPORT event
+/// and query the device (using EVIOCG* ioctls) to obtain its current state.
+const sync_dropped = InputEvent{
+    .type = linux.EV_SYN,
+    .code = linux.SYN_DROPPED,
     .value = 0,
     .time = undefined,
 };
@@ -194,7 +215,12 @@ pub const KeyboardState = struct {
     const Self = @This();
 
     pub fn init(self: *Self) void {
-        // TODO: emit Reset event
+        // Tell the listener to reset their keyboard state
+        // TODO: this doesn't work
+        self.writer(sync_dropped);
+        self.writer(sync_dropped);
+        self.writer(sync_report);
+
         var alloc = std.heap.FixedBufferAllocator.init(&self._stack_buffer);
         self.stack = std.ArrayListUnmanaged(InputEvent){};
         self.stack.ensureTotalCapacity(&alloc.allocator, 16) catch unreachable;
@@ -209,7 +235,7 @@ pub const KeyboardState = struct {
         // if (input.type == linux.EV_REL or input.type == linux.EV_ABS)
         //     keyboard.consume_pressed();
 
-        // forward anything that is not a key event, including SYNs
+        // forward anything that is not a key event, including sync events
         if (input.type != linux.EV_KEY or input.code >= NUM_KEYS) {
             keyboard.writer(input);
             return;
@@ -264,6 +290,7 @@ pub const KeyboardState = struct {
             .layer_hold => |val| keyboard.handle_layer_hold(val, input),
             .disabled => |val| keyboard.handle_disabled(val, input),
             .transparent => |val| keyboard.handle_transparent(val, input),
+            .mouse_move => |val| keyboard.handle_mouse_move(val, input),
         }
     }
 
@@ -409,6 +436,33 @@ pub const KeyboardState = struct {
         }
     }
 
+    fn handle_mouse_move(keyboard: *Self, mouse_move: LayerzActionMouseMove, input: InputEvent) void {
+        if (input.value == KEY_RELEASE) return;
+        var output = input;
+        output.type = linux.EV_REL;
+        output.code = mouse_move.key;
+        switch (mouse_move.key) {
+            linux.REL_X => {
+                output.code = linux.REL_X;
+                output.value = mouse_move.stepX;
+                keyboard.writer(output);
+                output.code = linux.REL_Y;
+                output.value = mouse_move.stepY;
+                keyboard.writer(output);
+            },
+            linux.REL_WHEEL, linux.REL_DIAL => {
+                output.value = mouse_move.stepX;
+                keyboard.writer(output);
+            },
+            linux.REL_HWHEEL => {
+                output.value = mouse_move.stepY;
+                keyboard.writer(output);
+            },
+            // Ideally this should be detected at compile time
+            else => {},
+        }
+    }
+
     /// Read events from stdinput and handle them.
     pub fn loop(keyboard: *Self) void {
         var input: InputEvent = undefined;
@@ -430,9 +484,7 @@ pub const KeyboardState = struct {
 
 pub fn write_event_to_stdout(event: InputEvent) void {
     const buffer = std.mem.asBytes(&event);
-    if (event.type == linux.EV_KEY) {
-        std.log.debug("wrote {}", .{event});
-    }
+    std.log.debug("wrote {}", .{event});
     if (event.code == resolve("CAPSLOCK")) {
         std.log.warn("!!! writing CAPSLOCK !!!", .{});
         std.debug.panic("CAPSLOCK shouldn't be emitted", .{});
@@ -741,14 +793,63 @@ test "Layer Hold With Modifiers From Layer Below" {
     try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
 }
 
+test "Mouse Move" {
+    test_outputs = std.ArrayList(InputEvent).init(std.testing.allocator);
+    defer test_outputs.deinit();
+
+    const m_up = LayerzAction{ .mouse_move = .{ .stepX = 10 } };
+    const m_down_right = LayerzAction{ .mouse_move = .{ .stepX = -10, .stepY = 10 } };
+
+    var layer0 = PASSTHROUGH;
+    map(&layer0, "W", m_up);
+    map(&layer0, "D", m_down_right);
+
+    var layout = [_]Layer{layer0};
+    var keyboard = KeyboardState{ .layout = &layout, .writer = testing_write_event };
+    keyboard.init();
+
+    const inputs = [_]InputEvent{
+        input_event(KEY_PRESS, "W", 0.0),
+        input_event(KEY_RELEASE, "W", 0.1),
+        input_event(KEY_PRESS, "D", 0.2),
+        input_event(KEY_RELEASE, "D", 0.3),
+    };
+    for (inputs) |input| keyboard.handle(input);
+
+    const expected = [_]InputEvent{
+        _event(linux.EV_REL, linux.REL_X, 10, 0.0),
+        _event(linux.EV_REL, linux.REL_Y, 0, 0.0),
+        _event(linux.EV_REL, linux.REL_X, -10, 0.2),
+        _event(linux.EV_REL, linux.REL_Y, 10, 0.2),
+    };
+    try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
+}
+
 // TODO: how can we avoid the global variable ?
 var test_outputs: std.ArrayList(InputEvent) = undefined;
 fn testing_write_event(event: InputEvent) void {
+    // Skip the 3 syn events emitted during keyboard.init()
+    if (event.type == linux.EV_SYN and test_outputs.items.len == 0) return;
     test_outputs.append(event) catch unreachable;
 }
 
 /// Shortcut to create an InputEvent, using float for timestamp.
 fn input_event(event: u8, comptime keyname: []const u8, time: f64) InputEvent {
+    return .{
+        .type = linux.EV_KEY,
+        .value = event,
+        .code = resolve(keyname),
+        // The way time is stored actually depends of the compile target...
+        // TODO: handle the case where sec and usec are part of the InputEvent struct.
+        .time = linux_time(time),
+    };
+}
+
+fn _event(_type: u16, code: u16, value: i32, time: f64) InputEvent {
+    return .{ .type = _type, .code = code, .value = value, .time = linux_time(time) };
+}
+
+fn linux_time(time: f64) linux.timeval {
     if (time < 1000) {
         // we are using fake timestamp, use a fake start time.
         _start_time = 0;
@@ -756,14 +857,7 @@ fn input_event(event: u8, comptime keyname: []const u8, time: f64) InputEvent {
     const time_modf = math.modf(time);
     const seconds = math.lossyCast(u32, time_modf.ipart);
     const micro_seconds = math.lossyCast(u32, time_modf.fpart * 1e6);
-    return .{
-        .type = linux.EV_KEY,
-        .value = event,
-        .code = resolve(keyname),
-        // The way time is stored actually depends of the compile target...
-        // TODO: handle the case where sec and usec are part of the InputEvent struct.
-        .time = .{ .tv_sec = seconds, .tv_usec = micro_seconds },
-    };
+    return linux.timeval{ .tv_sec = seconds, .tv_usec = micro_seconds };
 }
 
 test "input_event helper correctly converts micro seconds" {

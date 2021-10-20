@@ -3,6 +3,11 @@ const layerz = @import("layerz.zig");
 
 usingnamespace layerz;
 
+const m_up = layerz.LayerzAction{ .mouse_move = .{ .stepX = 10 } };
+const m_down = layerz.LayerzAction{ .mouse_move = .{ .stepX = -10 } };
+const m_left = layerz.LayerzAction{ .mouse_move = .{ .stepY = 10 } };
+const m_right = layerz.LayerzAction{ .mouse_move = .{ .stepY = -10 } };
+
 const mod_layer = ansi(
     .{ __, k("F1"), k("F2"), k("F3"), k("F4"), k("F5"), k("F6"), k("F7"), k("F8"), k("F9"), k("F10"), k("F11"), k("F12") },
     .{ __, k("1"), k("2"), k("3"), k("4"), k("5"), k("6"), k("7"), k("8"), k("9"), k("0"), k("BACKSLASH"), xx, xx },
@@ -24,6 +29,11 @@ pub fn main() anyerror!void {
     map(&layer, "LEFTSHIFT", k("LEFTMETA"));
     map(&layer, "LEFTALT", k("LEFTCTRL"));
     map(&layer, "CAPSLOCK", k("LEFTSHIFT"));
+
+    // map(&layer, "UP", m_up);
+    // map(&layer, "DOWN", m_down);
+    // map(&layer, "RIGHT", m_right);
+    // map(&layer, "LEFT", m_left);
 
     var keyboard = KeyboardState{ .layout = &[_]Layer{ layer, mod_layer } };
     keyboard.init();
