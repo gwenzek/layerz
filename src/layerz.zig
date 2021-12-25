@@ -6,6 +6,7 @@ const log = std.log;
 pub const linux = @cImport(@cInclude("linux/input.h"));
 
 var _start_time: i64 = -1;
+var _start_time_ns: i64 = 0;
 /// This is a port of linux input_event struct.
 /// The C code has different way of storing the time depending on the machine
 /// this isn't currently supported in the Zig.
@@ -21,23 +22,32 @@ pub const InputEvent = extern struct {
         options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        if (_start_time < 0) _start_time = std.time.timestamp();
+        _ = fmt;
+        _ = options;
         // use time relative to the start of the program
-        const time: f64 = math.lossyCast(f64, input.time.tv_sec - _start_time) + math.lossyCast(f64, input.time.tv_usec) / 1e6;
+        const time: f64 = math.lossyCast(f64, input.time.tv_sec - _start_time) + math.lossyCast(f64, input.time.tv_usec) / std.time.us_per_s;
         if (input.type == linux.EV_KEY) {
-            const event = switch (input.value) {
+            const value = switch (input.value) {
                 KEY_PRESS => "KEY_PRESS",
                 KEY_RELEASE => "KEY_RELEASE",
                 KEY_REPEAT => "KEY_REPEAT",
                 else => {
-                    try std.fmt.format(writer, "{{ EV_KEY({d}, {d}) ({d:.3}) }}", .{ input.value, input.code, time });
+                    try std.fmt.format(writer, "{{ EV_KEY({d}, {d}) ({d:.3}) }}", .{ input.code, input.value, time });
                     return;
                 },
             };
-
-            try std.fmt.format(writer, "{{{s}({d}) ({d:.3})}}", .{ event, input.code, time });
+            try std.fmt.format(writer, "{{{s}({d}) ({d:.3})}}", .{ value, input.code, time });
         } else {
-            try std.fmt.format(writer, "{{EV({d}, {d}, {d}) ({d:.3})}}", .{ input.type, input.value, input.code, time });
+            const ev_type = switch (input.value) {
+                linux.EV_REL => "EV_REL",
+                linux.EV_SYN => "EV_SYN",
+                linux.EV_MSC => "EV_MSC",
+                else => {
+                    try std.fmt.format(writer, "{{EV({d})({d}, {d}) ({d:.3})}}", .{ input.type, input.code, input.value, time });
+                    return;
+                },
+            };
+            try std.fmt.format(writer, "{{{s}({d}, {d}) ({d:.3})}}", .{ ev_type, input.code, input.value, time });
         }
     }
 };
@@ -199,6 +209,8 @@ pub const DelayedHandler = fn (
     next_event: InputEvent,
 ) void;
 
+var _special_release_enter: InputEvent = undefined;
+
 pub const KeyboardState = struct {
     layout: []const [NUM_KEYS]LayerzAction,
     writer: EventWriter = write_event_to_stdout,
@@ -215,21 +227,24 @@ pub const KeyboardState = struct {
     const Self = @This();
 
     pub fn init(self: *Self) void {
-        // Tell the listener to reset their keyboard state
+        // Release enter key. This is needed when you're typing f
         // TODO: this doesn't work
-        self.writer(sync_dropped);
-        self.writer(sync_dropped);
+        _start_time = std.time.timestamp();
+        _special_release_enter = input_event(KEY_RELEASE, "ENTER", std.math.lossyCast(f64, _start_time));
+        self.writer(_special_release_enter);
         self.writer(sync_report);
 
         var alloc = std.heap.FixedBufferAllocator.init(&self._stack_buffer);
         self.stack = std.ArrayListUnmanaged(InputEvent){};
-        self.stack.ensureTotalCapacity(&alloc.allocator, 16) catch unreachable;
+        self.stack.ensureTotalCapacity(alloc.allocator(), 16) catch unreachable;
         // TODO: should we resolve the transparent actions now ?
     }
 
     pub fn handle(keyboard: *Self, input: InputEvent) void {
-        if (input.type == linux.EV_MSC and input.code == linux.MSC_SCAN)
+        if (input.type == linux.EV_MSC and input.code == linux.MSC_SCAN) {
+            keyboard.writer(input);
             return;
+        }
 
         // make mouse and touchpad events consume pressed taps
         // if (input.type == linux.EV_REL or input.type == linux.EV_ABS)
@@ -418,11 +433,16 @@ pub const KeyboardState = struct {
     }
 
     /// Do nothing.
-    fn handle_disabled(keyboard: *const Self, layer_hold: LayerzActionDisabled, event: InputEvent) void {}
+    fn handle_disabled(keyboard: *const Self, layer_hold: LayerzActionDisabled, event: InputEvent) void {
+        _ = keyboard;
+        _ = layer_hold;
+        _ = event;
+    }
 
     /// Do the action from the base layer instead.
     /// If we are already on the base layer, just forward the input event.
     fn handle_transparent(keyboard: *Self, transparent: LayerzActionTransparent, event: InputEvent) void {
+        _ = transparent;
         const key_layer = keyboard.key_state[event.code];
         if (key_layer == keyboard.base_layer) {
             keyboard.writer(event);
@@ -470,7 +490,7 @@ pub const KeyboardState = struct {
         while (io.getStdIn().read(buffer)) {
             keyboard.handle(input);
         } else |err| {
-            std.debug.panic("Couldn't read event from stdin", .{});
+            std.debug.panic("Couldn't read event from stdin: {}", .{err});
         }
     }
 
@@ -514,7 +534,6 @@ test "Key remap with modifier" {
     // Map "Q" to "(" (shift+9)
     map(&layer, "Q", s("9"));
 
-    var layout = [_][NUM_KEYS]LayerzAction{layer};
     var keyboard = KeyboardState{ .layout = &.{layer}, .writer = testing_write_event };
     keyboard.init();
 
@@ -541,7 +560,6 @@ test "Modifiers don't leak to next key" {
     // Map "Q" to "(" (shift+9)
     map(&layer, "Q", s("9"));
 
-    var layout = [_][NUM_KEYS]LayerzAction{layer};
     var keyboard = KeyboardState{ .layout = &.{layer}, .writer = testing_write_event };
     keyboard.init();
 
@@ -825,11 +843,16 @@ test "Mouse Move" {
     try std.testing.expectEqualSlices(InputEvent, &expected, test_outputs.items);
 }
 
-// TODO: how can we avoid the global variable ?
-var test_outputs: std.ArrayList(InputEvent) = undefined;
+threadlocal var test_outputs: std.ArrayList(InputEvent) = undefined;
 fn testing_write_event(event: InputEvent) void {
-    // Skip the 3 syn events emitted during keyboard.init()
-    if (event.type == linux.EV_SYN and test_outputs.items.len == 0) return;
+    // we are using fake timestamp for testing.
+    _start_time = 0;
+    // Skip the
+    if (test_outputs.items.len == 0) {
+        if (std.mem.eql(u8, std.mem.asBytes(&event), std.mem.asBytes(&sync_report)) or
+            std.mem.eql(u8, std.mem.asBytes(&event), std.mem.asBytes(&_special_release_enter)))
+            return;
+    }
     test_outputs.append(event) catch unreachable;
 }
 
@@ -850,10 +873,6 @@ fn _event(_type: u16, code: u16, value: i32, time: f64) InputEvent {
 }
 
 fn linux_time(time: f64) linux.timeval {
-    if (time < 1000) {
-        // we are using fake timestamp, use a fake start time.
-        _start_time = 0;
-    }
     const time_modf = math.modf(time);
     const seconds = math.lossyCast(u32, time_modf.ipart);
     const micro_seconds = math.lossyCast(u32, time_modf.fpart * 1e6);

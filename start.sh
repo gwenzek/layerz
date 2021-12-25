@@ -13,6 +13,6 @@ fi
 
 # Use `zig build` to build in debug mode and have detailed logs about input/output
 # zig build -Drelease-safe
-zig build
+# zig build
 
 sudo intercept -g $KEEB | zig-out/bin/layerz | sudo uinput -d $KEEB

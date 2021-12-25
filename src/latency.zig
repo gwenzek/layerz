@@ -19,7 +19,7 @@ fn count_latency(n: i32) !void {
             break;
         }
     } else |err| {
-        std.debug.panic("Couldn't read event from stdin", .{});
+        std.debug.panic("Couldn't read event from stdin {}", .{err});
     }
     var avg_latency = @intToFloat(f64, total_latency) / @intToFloat(f64, total_events) / std.time.ns_per_ms;
     try std.fmt.format(stdout, "Recorded {} events. Avg latency = {d:.3} ms\n", .{ total_events, avg_latency });
@@ -33,9 +33,9 @@ fn latency(event: InputEvent) i128 {
 
 pub fn main() anyerror!void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-    const gpa = &general_purpose_allocator.allocator;
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
+    const allocator = general_purpose_allocator.allocator();
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
     const n: i32 = if (args.len > 1) try std.fmt.parseInt(i32, args[1], 10) else 50;
     try std.fmt.format(stdout, "Computing latency of the next {} key presses\n", .{n});
     try count_latency(n);
