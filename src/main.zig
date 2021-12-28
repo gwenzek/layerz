@@ -37,7 +37,6 @@ pub fn main() anyerror!void {
     // l.map(&layer, "RIGHT", m_right);
     // l.map(&layer, "LEFT", m_left);
 
-    var keyboard = l.KeyboardState{ .layout = &[_]l.Layer{ layer, mod_layer } };
-    keyboard.init();
+    var keyboard = l.stdioKeyboard(&[_]l.Layer{ layer, mod_layer });
     keyboard.loop();
 }
