@@ -33,11 +33,11 @@ pub const InputEvent = extern struct {
                 KEY_RELEASE => "KEY_RELEASE",
                 KEY_REPEAT => "KEY_REPEAT",
                 else => {
-                    try std.fmt.format(writer, "{{ EV_KEY({d}, {d}) ({d:.3}) }}", .{ input.code, input.value, time });
+                    try std.fmt.format(writer, "{{ EV_KEY({d}, {d}) ({d:.3}) }}", .{ input.value, input.code, time });
                     return;
                 },
             };
-            try std.fmt.format(writer, "{{{s}({d}) ({d:.3})}}", .{ value, input.code, time });
+            try std.fmt.format(writer, "{{{s}({s}) ({d:.3})}}", .{ value, resolveName(input.code), time });
         } else {
             const ev_type = switch (input.value) {
                 linux.EV_REL => "EV_REL",
@@ -119,6 +119,16 @@ pub fn resolve(comptime keyname: []const u8) u8 {
         @compileError("input-event-codes.h doesn't declare: " ++ fullname);
     }
     return @field(linux, fullname);
+}
+
+const _keynames = [_][]const u8{ "TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "ENTER", "LCTRL", "A", "S", "D", "F", "G", "H" };
+const _first_key_index = @as(u16, resolve(_keynames[0]));
+
+pub fn resolveName(keycode: u16) []const u8 {
+    if (keycode < _first_key_index) return "LOW";
+    var offset = keycode - _first_key_index;
+    if (offset >= _keynames.len) return "HIGH";
+    return _keynames[offset];
 }
 
 test "Resolve keyname" {
@@ -466,75 +476,68 @@ pub fn KeyboardState(Provider: anytype) type {
             }
         }
 
-        fn handle_layer_hold(keyboard: *Self, layer_hold: LayerzActionLayerHold, event: InputEvent) void {
+        fn handle_layer_hold(self: *Self, layer_hold: LayerzActionLayerHold, event: InputEvent) void {
             switch (event.value) {
                 KEY_PRESS => {
-                    // TODO: remove delayed_handler and use callstack instead
-                    keyboard.maybe_layer = layer_hold;
-                    keyboard.delayed_handler = &handle_layer_hold_second;
-                    var delayed = keyboard.stack.addOneAssumeCapacity();
-                    delayed.* = event;
-                    delayed.code = layer_hold.key;
-                    log.debug("Maybe we are holding a layer: {}. Delay event: {}", .{ layer_hold.layer, event });
+                    var tap = event;
+                    tap.code = layer_hold.key;
+                    log.warn("Maybe we are holding a layer: {}. Delay tap: {}", .{ layer_hold.layer, event });
+
+                    var disambiguated = false;
+                    while (!disambiguated) {
+                        disambiguated = self.disambiguate_layer_hold(layer_hold, tap);
+                    }
                 },
                 KEY_RELEASE => {
-                    keyboard.delayed_handler = null;
-                    if (keyboard.layer == layer_hold.layer) {
-                        log.debug("Disabling layer: {} on {}", .{ layer_hold.layer, event });
-                        keyboard.layer = keyboard.base_layer;
+                    if (self.layer == layer_hold.layer) {
+                        log.warn("Disabling layer: {} on {}", .{ layer_hold.layer, event });
+                        self.layer = self.base_layer;
                     } else {
-                        keyboard.handle_tap(.{ .key = layer_hold.key }, event);
+                        self.handle_tap(.{ .key = layer_hold.key }, event);
                     }
                 },
                 else => {},
             }
         }
 
-        fn handle_layer_hold_second(
-            keyboard: *Self,
-            event: InputEvent,
-            next_event: InputEvent,
-        ) void {
-            log.warn("handle_layer_hold_second: {}, {}", .{ event, next_event });
-            const action = keyboard.layout[keyboard.base_layer][event.code];
-            const layer_hold = switch (action) {
-                .layer_hold => |val| val,
-                else => {
-                    log.warn("Inconsistent internal state, expected a LayerHold action on top of the stack, but found: {}", .{action});
-                    keyboard.delayed_handler = null;
-                    keyboard.consume_pressed();
-                    return;
-                },
-            };
-            if (event.code == next_event.code) {
+        fn disambiguate_layer_hold(
+            self: *Self,
+            layer_hold: LayerzActionLayerHold,
+            tap: InputEvent,
+        ) bool {
+            var maybe_event = self.read_event(0);
+            if (maybe_event == null) return true;
+            const event = maybe_event.?;
+
+            if (layer_hold.key == event.code) {
                 // Another event on the layer key
-                if (next_event.value == KEY_RELEASE) {
-                    if (delta_ms(event, next_event) < layer_hold.delay_ms) {
-                        // We have just tapped on the layer button, emit the key
-                        log.debug("Quick tap on layer {})", .{layer_hold});
-                        keyboard.writer(event);
-                        keyboard.handle_tap(.{ .key = layer_hold.key }, next_event);
+                if (event.value == KEY_RELEASE) {
+                    if (delta_ms(tap, event) < layer_hold.delay_ms) {
+                        // We have just tapped on the layer button, emit the tap and release
+                        log.warn("Quick tap on layer {})", .{layer_hold});
+                        self.writer(tap);
+                        self.handle_tap(.{ .key = layer_hold.key }, event);
                     } else {
                         // We have been holding for a long time, do nothing
                     }
-                    keyboard.delayed_handler = null;
-                    _ = keyboard.stack.pop();
+                    return true;
+                } else {
+                    // This is probably a KEY_REPEAT of the hold key, let's wait for another key
+                    return false;
                 }
             } else {
-                if (next_event.value == KEY_PRESS) {
+                if (event.value == KEY_PRESS) {
                     // TODO: handle quick typing ?
-                    // if (delta_ms(event, next_event) > layer_hold.delay_ms) ...
+                    // if (delta_ms(tap, event) > layer_hold.delay_ms) ...
 
-                    log.debug("Holding layer {}", .{layer_hold});
-                    // We are holding the layer !
-                    keyboard.layer = layer_hold.layer;
-                    // Disable handle_layer_hold_second, resume normal key handling
-                    keyboard.delayed_handler = null;
-                    _ = keyboard.stack.pop();
+                    log.warn("Holding layer {}", .{layer_hold});
+                    self.layer = layer_hold.layer;
                 }
                 // Call regular key handling code with the new layer
-                const next_action = keyboard.resolve_action(next_event);
-                keyboard.handle_action(next_action, next_event);
+                const next_action = self.resolve_action(event);
+                self.handle_action(next_action, event);
+                // Continue the while loop while we haven't found a key_press
+                return event.value == KEY_PRESS;
             }
         }
 
