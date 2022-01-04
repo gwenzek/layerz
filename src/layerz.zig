@@ -1,8 +1,9 @@
 /// Reference https://www.kernel.org/doc/html/v4.15/input/event-codes.html
 const std = @import("std");
+const testing = std.testing;
 const io = std.io;
 const math = std.math;
-const log = std.log;
+const log = std.log.scoped(.layerz);
 pub const linux = @cImport(@cInclude("linux/input.h"));
 
 var _start_time: i64 = -1;
@@ -66,7 +67,7 @@ test "InputEvent matches input_event byte by byte" {
         .time = .{ .tv_sec = 123, .tv_usec = 456789 },
     };
 
-    try std.testing.expectEqualSlices(
+    try testing.expectEqualSlices(
         u8,
         std.mem.asBytes(&c_struct),
         std.mem.asBytes(&zig_struct),
@@ -121,9 +122,9 @@ pub fn resolve(comptime keyname: []const u8) u8 {
 }
 
 test "Resolve keyname" {
-    try std.testing.expectEqual(linux.KEY_Q, resolve("Q"));
-    try std.testing.expectEqual(linux.KEY_TAB, resolve("TAB"));
-    try std.testing.expectEqual(linux.KEY_LEFTSHIFT, resolve("LEFTSHIFT"));
+    try testing.expectEqual(linux.KEY_Q, resolve("Q"));
+    try testing.expectEqual(linux.KEY_TAB, resolve("TAB"));
+    try testing.expectEqual(linux.KEY_LEFTSHIFT, resolve("LEFTSHIFT"));
 }
 
 /// Layout DSL: tap the given key
@@ -221,9 +222,9 @@ pub const StdIoProvider = struct {
 
     pub fn write_event(self: *StdIoProvider, event: InputEvent) void {
         const buffer = std.mem.asBytes(&event);
-        std.log.debug("wrote {}", .{event});
+        log.debug("wrote {}", .{event});
         if (event.code == resolve("CAPSLOCK")) {
-            std.log.warn("!!! writing CAPSLOCK !!!", .{});
+            log.warn("!!! writing CAPSLOCK !!!", .{});
             std.debug.panic("CAPSLOCK shouldn't be emitted", .{});
         }
         // TODO: use io uring ?
@@ -247,12 +248,16 @@ pub const StdIoProvider = struct {
 pub const TestProvider = struct {
     outputs: std.ArrayList(InputEvent),
     inputs: []const InputEvent,
+    time_ms: i64,
     offset: u16 = 0,
 
     fn init(inputs: []const InputEvent) TestProvider {
+        // we are using fake timestamp for testing.
+        _start_time = 0;
         return .{
             .inputs = inputs,
-            .outputs = std.ArrayList(InputEvent).init(std.testing.allocator),
+            .outputs = std.ArrayList(InputEvent).init(testing.allocator),
+            .time_ms = _start_time,
         };
     }
 
@@ -261,8 +266,6 @@ pub const TestProvider = struct {
     }
 
     pub fn write_event(self: *TestProvider, event: InputEvent) void {
-        // we are using fake timestamp for testing.
-        _start_time = 0;
         // Skip the
         if (self.outputs.items.len == 0) {
             if (std.mem.eql(u8, std.mem.asBytes(&event), std.mem.asBytes(&sync_report)) or
@@ -270,15 +273,22 @@ pub const TestProvider = struct {
                 return;
         }
         self.outputs.append(event) catch unreachable;
+        log.warn("wrote {}", .{event});
     }
 
     pub fn read_event(self: *TestProvider, timeout_ms: u32) ?InputEvent {
-        // TODO handle timeout
-        _ = timeout_ms;
         if (self.offset >= self.inputs.len) return null;
-        const offset = self.offset;
-        self.offset += 1;
-        return self.inputs[offset];
+        const event = self.inputs[self.offset];
+        const event_ms = event.time.tv_sec * 1000 + @divFloor(event.time.tv_usec, 1000);
+        if (timeout_ms > 0 and event_ms > self.time_ms + timeout_ms) {
+            log.warn("Timed out after {}ms. Current time {}ms, next event: {}ms", .{ timeout_ms, self.time_ms, event_ms });
+            self.time_ms += timeout_ms;
+            return null;
+        } else {
+            self.time_ms = event_ms;
+            self.offset += 1;
+            return event;
+        }
     }
 };
 
@@ -299,6 +309,7 @@ pub fn testKeyboardAlloc(layout: []const Layer, events: []const InputEvent) Keyb
         .event_provider = provider,
     };
     keeb.init();
+    _start_time = 0;
     return keeb;
 }
 
@@ -356,7 +367,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 keyboard.writer(input);
                 return;
             }
-            std.log.debug("read {}", .{input});
+            log.warn("read {}", .{input});
 
             const stack_len = keyboard.stack.items.len;
             if (stack_len > 0) {
@@ -382,7 +393,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 KEY_PRESS => keyboard.layer,
                 KEY_RELEASE => keyboard.key_state[input.code],
                 else => {
-                    std.log.warn("ignoring unkown event {}", .{input});
+                    log.warn("ignoring unkown event {}", .{input});
                     return xx;
                 },
             };
@@ -392,7 +403,7 @@ pub fn KeyboardState(Provider: anytype) type {
             }
             keyboard.key_state[input.code] = key_layer;
             if (input.code == resolve("CAPSLOCK")) {
-                std.log.debug("CAPSLOCK is on layer {}", .{key_layer});
+                log.debug("CAPSLOCK is on layer {}", .{key_layer});
             }
             return keyboard.layout[key_layer][input.code];
         }
@@ -428,21 +439,13 @@ pub fn KeyboardState(Provider: anytype) type {
                 keyboard.writer(mod_press);
                 keyboard.writer(output);
 
-                // Delay the modifier release to the key release / or next key press
-                var mod_release = keyboard.stack.addOneAssumeCapacity();
-                mod_release.* = mod_press;
+                // Delay the modifier release to the next event
+                var next_event = keyboard.read_event(0);
+                var mod_release = mod_press;
                 mod_release.value = KEY_RELEASE;
-            } else if (input.value == KEY_RELEASE) {
-                keyboard.writer(output);
-                var i = @intCast(u8, keyboard.stack.items.len);
-                // Release the mod if it hasn't been done before.
-                while (i > 0) : (i -= 1) {
-                    var mod_release = keyboard.stack.items[i - 1];
-                    if (mod_release.code == tap.mod) {
-                        keyboard.writer(mod_release);
-                        _ = keyboard.stack.orderedRemove(i - 1);
-                    }
-                }
+                keyboard.writer(mod_release);
+                if (next_event) |next| keyboard.handle(next);
+                return;
             } else {
                 keyboard.writer(output);
             }
@@ -466,17 +469,18 @@ pub fn KeyboardState(Provider: anytype) type {
         fn handle_layer_hold(keyboard: *Self, layer_hold: LayerzActionLayerHold, event: InputEvent) void {
             switch (event.value) {
                 KEY_PRESS => {
+                    // TODO: remove delayed_handler and use callstack instead
                     keyboard.maybe_layer = layer_hold;
                     keyboard.delayed_handler = &handle_layer_hold_second;
                     var delayed = keyboard.stack.addOneAssumeCapacity();
                     delayed.* = event;
                     delayed.code = layer_hold.key;
-                    std.log.debug("Maybe we are holding a layer: {}. Delay event: {}", .{ layer_hold.layer, event });
+                    log.debug("Maybe we are holding a layer: {}. Delay event: {}", .{ layer_hold.layer, event });
                 },
                 KEY_RELEASE => {
                     keyboard.delayed_handler = null;
                     if (keyboard.layer == layer_hold.layer) {
-                        std.log.debug("Disabling layer: {} on {}", .{ layer_hold.layer, event });
+                        log.debug("Disabling layer: {} on {}", .{ layer_hold.layer, event });
                         keyboard.layer = keyboard.base_layer;
                     } else {
                         keyboard.handle_tap(.{ .key = layer_hold.key }, event);
@@ -491,11 +495,12 @@ pub fn KeyboardState(Provider: anytype) type {
             event: InputEvent,
             next_event: InputEvent,
         ) void {
+            log.warn("handle_layer_hold_second: {}, {}", .{ event, next_event });
             const action = keyboard.layout[keyboard.base_layer][event.code];
             const layer_hold = switch (action) {
                 .layer_hold => |val| val,
                 else => {
-                    std.log.warn("Inconsistent internal state, expected a LayerHold action on top of the stack, but found: {}", .{action});
+                    log.warn("Inconsistent internal state, expected a LayerHold action on top of the stack, but found: {}", .{action});
                     keyboard.delayed_handler = null;
                     keyboard.consume_pressed();
                     return;
@@ -506,7 +511,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 if (next_event.value == KEY_RELEASE) {
                     if (delta_ms(event, next_event) < layer_hold.delay_ms) {
                         // We have just tapped on the layer button, emit the key
-                        std.log.debug("Quick tap on layer {})", .{layer_hold});
+                        log.debug("Quick tap on layer {})", .{layer_hold});
                         keyboard.writer(event);
                         keyboard.handle_tap(.{ .key = layer_hold.key }, next_event);
                     } else {
@@ -520,7 +525,7 @@ pub fn KeyboardState(Provider: anytype) type {
                     // TODO: handle quick typing ?
                     // if (delta_ms(event, next_event) > layer_hold.delay_ms) ...
 
-                    std.log.debug("Holding layer {}", .{layer_hold});
+                    log.debug("Holding layer {}", .{layer_hold});
                     // We are holding the layer !
                     keyboard.layer = layer_hold.layer;
                     // Disable handle_layer_hold_second, resume normal key handling
@@ -589,11 +594,14 @@ pub fn KeyboardState(Provider: anytype) type {
             while (keyboard.read_event(0)) |input| {
                 keyboard.handle(input);
             }
+            log.warn("No more event, clearing the queue", .{});
+            keyboard.consume_pressed();
         }
 
         pub fn consume_pressed(keyboard: *Self) void {
             while (keyboard.stack.items.len > 0) {
                 var delayed_event = keyboard.stack.pop();
+                log.warn("consuming {}", .{delayed_event});
                 keyboard.writer(delayed_event);
             }
         }
@@ -621,6 +629,25 @@ fn delta_ms(event1: InputEvent, event2: InputEvent) i32 {
     return math.lossyCast(i32, delta);
 }
 
+test "testKeyboard handle timeouts correctly" {
+    var layer: Layer = PASSTHROUGH;
+    const inputs = [_]InputEvent{
+        input_event(KEY_PRESS, "Q", 0.0),
+        input_event(KEY_RELEASE, "Q", 0.1),
+        input_event(KEY_PRESS, "Q", 0.5),
+        input_event(KEY_RELEASE, "Q", 0.6),
+    };
+    var keyboard = testKeyboardAlloc(&.{layer}, &inputs);
+    defer keyboard.deinit();
+
+    try testing.expectEqual(keyboard.read_event(0), input_event(KEY_PRESS, "Q", 0.0));
+    try testing.expectEqual(keyboard.read_event(5), null);
+    try testing.expectEqual(keyboard.read_event(600), input_event(KEY_RELEASE, "Q", 0.1));
+    try testing.expectEqual(keyboard.read_event(200), null);
+    try testing.expectEqual(keyboard.read_event(0), input_event(KEY_PRESS, "Q", 0.5));
+    // try testing.expectEqual(keyboard.read_event(100), input_event(KEY_PRESS, "Q", 0.1));
+}
+
 test "Key remap with modifier" {
     var layer: Layer = PASSTHROUGH;
     // Map "Q" to "(" (shift+9)
@@ -631,17 +658,18 @@ test "Key remap with modifier" {
         input_event(KEY_RELEASE, "Q", 0.1),
     };
     var keyboard = testKeyboardAlloc(&.{layer}, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "LEFTSHIFT", 0.0),
         input_event(KEY_PRESS, "9", 0.0),
+        input_event(KEY_RELEASE, "LEFTSHIFT", 0.0),
         input_event(KEY_RELEASE, "9", 0.1),
-        input_event(KEY_RELEASE, "LEFTSHIFT", 0.1),
     };
 
-    try std.testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
+    log.warn("key remap with modifier: {any}", .{keyboard.event_provider.outputs.items});
+    try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
 test "Modifiers don't leak to next key" {
@@ -656,8 +684,8 @@ test "Modifiers don't leak to next key" {
         input_event(KEY_RELEASE, "Q", 0.3),
     };
     var keyboard = testKeyboardAlloc(&.{layer}, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "LEFTSHIFT", 0.0),
@@ -667,7 +695,7 @@ test "Modifiers don't leak to next key" {
         input_event(KEY_RELEASE, "W", 0.2),
         input_event(KEY_RELEASE, "9", 0.3),
     };
-    try std.testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
 test "Layer toggle" {
@@ -700,8 +728,8 @@ test "Layer toggle" {
         input_event(KEY_RELEASE, "Q", 1.3),
     };
     var keyboard = testKeyboardAlloc(&.{ layer0, layer1 }, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "Q", 0.0),
@@ -713,7 +741,7 @@ test "Layer toggle" {
         input_event(KEY_PRESS, "A", 1.1),
         input_event(KEY_RELEASE, "A", 1.3),
     };
-    try std.testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
 test "Handle unexpected events" {
@@ -723,10 +751,10 @@ test "Handle unexpected events" {
         input_event(KEY_RELEASE, "Q", 0.1),
     };
     var keyboard = testKeyboardAlloc(&layout, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
-    try std.testing.expectEqualSlices(InputEvent, &inputs, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &inputs, keyboard.event_provider.outputs.items);
 }
 
 test "PASSTHROUGH layout passes all keyboard events through" {
@@ -737,10 +765,10 @@ test "PASSTHROUGH layout passes all keyboard events through" {
         input_event(KEY_RELEASE, "Q", 0.1),
     };
     var keyboard = testKeyboardAlloc(&layout, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
-    try std.testing.expectEqualSlices(InputEvent, &inputs, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &inputs, keyboard.event_provider.outputs.items);
 }
 
 test "Transparent pass to layer below" {
@@ -768,8 +796,8 @@ test "Transparent pass to layer below" {
         input_event(KEY_PRESS, "W", 0.7),
     };
     var keyboard = testKeyboardAlloc(&.{ layer0, layer1 }, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "A", 0.0),
@@ -779,7 +807,7 @@ test "Transparent pass to layer below" {
         input_event(KEY_PRESS, "A", 0.6),
         input_event(KEY_PRESS, "Z", 0.7),
     };
-    try std.testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
 test "Layer Hold" {
@@ -819,8 +847,8 @@ test "Layer Hold" {
         input_event(KEY_RELEASE, "Q", 2.7),
     };
     var keyboard = testKeyboardAlloc(&.{ layer0, layer1 }, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "Q", 0.0),
@@ -840,7 +868,7 @@ test "Layer Hold" {
         input_event(KEY_PRESS, "A", 2.5),
         input_event(KEY_RELEASE, "A", 2.7),
     };
-    try std.testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
 test "Layer Hold With Modifiers From Layer Below" {
@@ -863,8 +891,8 @@ test "Layer Hold With Modifiers From Layer Below" {
         input_event(KEY_RELEASE, "CAPSLOCK", 0.5),
     };
     var keyboard = testKeyboardAlloc(&.{ layer0, layer1 }, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
     const expected = [_]InputEvent{
         input_event(KEY_PRESS, "LEFTSHIFT", 0.1),
@@ -872,7 +900,7 @@ test "Layer Hold With Modifiers From Layer Below" {
         input_event(KEY_RELEASE, "RIGHTBRACE", 0.3),
         input_event(KEY_RELEASE, "LEFTSHIFT", 0.5),
     };
-    try std.testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
 test "Mouse Move" {
@@ -890,8 +918,8 @@ test "Mouse Move" {
         input_event(KEY_RELEASE, "D", 0.3),
     };
     var keyboard = testKeyboardAlloc(&.{layer0}, &inputs);
-    keyboard.loop();
     defer keyboard.deinit();
+    keyboard.loop();
 
     const expected = [_]InputEvent{
         _event(linux.EV_REL, linux.REL_X, 10, 0.0),
@@ -899,7 +927,7 @@ test "Mouse Move" {
         _event(linux.EV_REL, linux.REL_X, -10, 0.2),
         _event(linux.EV_REL, linux.REL_Y, 10, 0.2),
     };
-    try std.testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
+    try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
 /// Shortcut to create an InputEvent, using float for timestamp.
@@ -926,7 +954,7 @@ fn linux_time(time: f64) linux.timeval {
 }
 
 test "input_event helper correctly converts micro seconds" {
-    try std.testing.expectEqual(
+    try testing.expectEqual(
         InputEvent{
             .type = linux.EV_KEY,
             .value = 1,
@@ -935,7 +963,7 @@ test "input_event helper correctly converts micro seconds" {
         },
         input_event(KEY_PRESS, "Q", 123.456),
     );
-    try std.testing.expectEqual(
+    try testing.expectEqual(
         InputEvent{
             .type = linux.EV_KEY,
             .value = 1,
@@ -954,10 +982,10 @@ fn _input_delta_ms(t1: f64, t2: f64) i32 {
 }
 
 test "delta_ms" {
-    try std.testing.expectEqual(@as(i32, 1), _input_delta_ms(123.456, 123.45701));
-    try std.testing.expectEqual(@as(i32, 0), _input_delta_ms(123.456, 123.45650));
-    try std.testing.expectEqual(@as(i32, -1), _input_delta_ms(123.45701, 123.456));
-    try std.testing.expectEqual(@as(i32, 1000), _input_delta_ms(123, 124));
+    try testing.expectEqual(@as(i32, 1), _input_delta_ms(123.456, 123.45701));
+    try testing.expectEqual(@as(i32, 0), _input_delta_ms(123.456, 123.45650));
+    try testing.expectEqual(@as(i32, -1), _input_delta_ms(123.45701, 123.456));
+    try testing.expectEqual(@as(i32, 1000), _input_delta_ms(123, 124));
 }
 
 // Layout DSL: create a layer using the ANSI layout
