@@ -72,18 +72,17 @@ TODO: could we generate the XKB layout ourselves ?
 
 ## Performance
 
-Those numbers varies run by run,
-and I guess depends on your layout and which key you press.
+I didn't find a good way to measure the latency,
+because depending on the layout, Layerz will delay some ambiguous key presses
+until the next key.
+So in this case the latency is a feature.
+Instead I'm measuring throughput, 
+by piping a full list of keys event through the program.
+Layerz then don't need to wait for keys and we can measure the actual time per key.
+This include reading and writing, but that's a cost created by using Layerz.
+We spend about 25% of our time in the kernel mode, making syscalls to read/write events.
 
-Intercept latency: 0.072 ms
-Intercept + LayerZ latency (release safe): 0.156 ms
-Intercept + LayerZ latency (release fast): 0.135 ms
-
-The difference between release safe and release fast isn't significant.
-TODO: make a script that only measure the latency of LayerZ on a 
-recorded set of keys
-TODO: this seems like a high latency to me. I should profile this.
-
+<!-- TODO: include some actual numbers -->
 
 ## Reference
 

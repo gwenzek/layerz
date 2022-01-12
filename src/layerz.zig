@@ -9,8 +9,8 @@ pub const linux = @cImport(@cInclude("linux/input.h"));
 var _start_time: i64 = -1;
 var _start_time_ns: i64 = 0;
 /// This is a port of linux input_event struct.
-/// The C code has different way of storing the time depending on the machine
-/// this isn't currently supported in the Zig.
+/// Linux kernel has different way of storing the time depending on the architecture
+/// this isn't currently supported in Layerz code (notably in `delta_ms`)
 pub const InputEvent = extern struct {
     time: linux.timeval,
     type: u16,
@@ -244,10 +244,13 @@ pub const StdIoProvider = struct {
 
     pub fn read_event(self: *StdIoProvider, timeout_ms: u32) ?InputEvent {
         // TODO: handle timeout
+        // TODO: use tigerbeetle_io to read using io_uring
+        // TODO: read directly from device instead of using intercept
         _ = timeout_ms;
         var input: InputEvent = undefined;
         const buffer = std.mem.asBytes(&input);
-        if (self.stdin.read(buffer)) {
+        if (self.stdin.read(buffer)) |bytes_read| {
+            if (bytes_read == 0) return null;
             return input;
         } else |err| {
             std.debug.panic("Couldn't read event from stdin: {}", .{err});
@@ -283,7 +286,7 @@ pub const TestProvider = struct {
                 return;
         }
         self.outputs.append(event) catch unreachable;
-        log.warn("wrote {}", .{event});
+        log.debug("wrote {}", .{event});
     }
 
     pub fn read_event(self: *TestProvider, timeout_ms: u32) ?InputEvent {
@@ -291,7 +294,7 @@ pub const TestProvider = struct {
         const event = self.inputs[self.offset];
         const event_ms = event.time.tv_sec * 1000 + @divFloor(event.time.tv_usec, 1000);
         if (timeout_ms > 0 and event_ms > self.time_ms + timeout_ms) {
-            log.warn("Timed out after {}ms. Current time {}ms, next event: {}ms", .{ timeout_ms, self.time_ms, event_ms });
+            log.debug("Timed out after {}ms. Current time {}ms, next event: {}ms", .{ timeout_ms, self.time_ms, event_ms });
             self.time_ms += timeout_ms;
             return null;
         } else {
@@ -328,13 +331,11 @@ pub fn KeyboardState(Provider: anytype) type {
         layout: []const Layer,
         event_provider: Provider,
 
+        // This is the mutable state of the keyboard.
+        // We are saving the current layer and the current layer for each key.
+        // Every key release uses the layer at the time of the last press for this key.
         base_layer: u8 = 0,
         layer: u8 = 0,
-        maybe_layer: LayerzActionLayerHold = undefined,
-        delayed_handler: ?*const DelayedHandler = null,
-        // we should have an allocator, there are more thing to store
-        _stack_buffer: [32 * @sizeOf(InputEvent)]u8 = undefined,
-        stack: std.ArrayListUnmanaged(InputEvent) = undefined,
         key_state: [NUM_KEYS]u8 = [_]u8{0} ** NUM_KEYS,
 
         const Self = @This();
@@ -352,9 +353,6 @@ pub fn KeyboardState(Provider: anytype) type {
             self.writer(_special_release_enter);
             self.writer(sync_report);
 
-            var alloc = std.heap.FixedBufferAllocator.init(&self._stack_buffer);
-            self.stack = std.ArrayListUnmanaged(InputEvent){};
-            self.stack.ensureTotalCapacity(alloc.allocator(), 16) catch unreachable;
             // TODO: should we resolve the transparent actions now ?
         }
 
@@ -368,32 +366,21 @@ pub fn KeyboardState(Provider: anytype) type {
                 return;
             }
 
-            // make mouse and touchpad events consume pressed taps
-            // if (input.type == linux.EV_REL or input.type == linux.EV_ABS)
-            //     keyboard.consume_pressed();
-
             // forward anything that is not a key event, including sync events
             if (input.type != linux.EV_KEY or input.code >= NUM_KEYS) {
                 keyboard.writer(input);
                 return;
             }
-            log.warn("read {}", .{input});
-
-            const stack_len = keyboard.stack.items.len;
-            if (stack_len > 0) {
-                if (keyboard.delayed_handler) |handler| {
-                    const last_input = keyboard.stack.items[stack_len - 1];
-                    handler.*(keyboard, last_input, input);
-                    return;
-                }
-            }
+            log.debug("read {}", .{input});
 
             const action = keyboard.resolve_action(input);
             keyboard.handle_action(action, input);
         }
 
+        /// Get the layer on which the event happened.
+        /// Key presses happen on the current layer,
+        /// While key releases happen on the layer at the time of the press.
         fn resolve_action(keyboard: *Self, input: InputEvent) LayerzAction {
-            // get the layer on which this event happen
             const key_layer = switch (input.value) {
                 KEY_REPEAT => {
                     // TODO: check if it's right to swallow repeats event
@@ -407,10 +394,7 @@ pub fn KeyboardState(Provider: anytype) type {
                     return xx;
                 },
             };
-            if (input.value == KEY_PRESS) {
-                // release delayed events
-                keyboard.consume_pressed();
-            }
+
             keyboard.key_state[input.code] = key_layer;
             if (input.code == resolve("CAPSLOCK")) {
                 log.debug("CAPSLOCK is on layer {}", .{key_layer});
@@ -418,6 +402,7 @@ pub fn KeyboardState(Provider: anytype) type {
             return keyboard.layout[key_layer][input.code];
         }
 
+        /// Handlers are allowed to consume more keyboard events that the one given to them.
         fn handle_action(keyboard: *Self, action: LayerzAction, input: InputEvent) void {
             // TODO: generate this switch ?
             switch (action) {
@@ -481,7 +466,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 KEY_PRESS => {
                     var tap = event;
                     tap.code = layer_hold.key;
-                    log.warn("Maybe we are holding a layer: {}. Delay tap: {}", .{ layer_hold.layer, event });
+                    log.debug("Maybe we are holding a layer: {}. Delay tap: {}", .{ layer_hold.layer, event });
 
                     var disambiguated = false;
                     while (!disambiguated) {
@@ -490,7 +475,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 },
                 KEY_RELEASE => {
                     if (self.layer == layer_hold.layer) {
-                        log.warn("Disabling layer: {} on {}", .{ layer_hold.layer, event });
+                        log.debug("Disabling layer: {} on {}", .{ layer_hold.layer, event });
                         self.layer = self.base_layer;
                     } else {
                         self.handle_tap(.{ .key = layer_hold.key }, event);
@@ -514,7 +499,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 if (event.value == KEY_RELEASE) {
                     if (delta_ms(tap, event) < layer_hold.delay_ms) {
                         // We have just tapped on the layer button, emit the tap and release
-                        log.warn("Quick tap on layer {})", .{layer_hold});
+                        log.debug("Quick tap on layer {})", .{layer_hold});
                         self.writer(tap);
                         self.handle_tap(.{ .key = layer_hold.key }, event);
                     } else {
@@ -529,8 +514,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 if (event.value == KEY_PRESS) {
                     // TODO: handle quick typing ?
                     // if (delta_ms(tap, event) > layer_hold.delay_ms) ...
-
-                    log.warn("Holding layer {}", .{layer_hold});
+                    log.debug("Holding layer {}", .{layer_hold});
                     self.layer = layer_hold.layer;
                 }
                 // Call regular key handling code with the new layer
@@ -597,16 +581,7 @@ pub fn KeyboardState(Provider: anytype) type {
             while (keyboard.read_event(0)) |input| {
                 keyboard.handle(input);
             }
-            log.warn("No more event, clearing the queue", .{});
-            keyboard.consume_pressed();
-        }
-
-        pub fn consume_pressed(keyboard: *Self) void {
-            while (keyboard.stack.items.len > 0) {
-                var delayed_event = keyboard.stack.pop();
-                log.warn("consuming {}", .{delayed_event});
-                keyboard.writer(delayed_event);
-            }
+            log.debug("No more event, clearing the queue", .{});
         }
 
         pub fn writer(keyboard: *Self, event: InputEvent) void {
@@ -671,7 +646,7 @@ test "Key remap with modifier" {
         input_event(KEY_RELEASE, "9", 0.1),
     };
 
-    log.warn("key remap with modifier: {any}", .{keyboard.event_provider.outputs.items});
+    log.debug("key remap with modifier: {any}", .{keyboard.event_provider.outputs.items});
     try testing.expectEqualSlices(InputEvent, &expected, keyboard.event_provider.outputs.items);
 }
 
@@ -943,6 +918,10 @@ fn input_event(event: u8, comptime keyname: []const u8, time: f64) InputEvent {
         // TODO: handle the case where sec and usec are part of the InputEvent struct.
         .time = linux_time(time),
     };
+}
+
+test "input event" {
+    try testing.expectEqual(@as(u32, 24), @sizeOf(InputEvent));
 }
 
 fn _event(_type: u16, code: u16, value: i32, time: f64) InputEvent {

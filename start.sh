@@ -15,4 +15,4 @@ fi
 # zig build -Drelease-safe
 # zig build
 
-sudo intercept -g $KEEB | zig-out/bin/layerz_main | sudo uinput -d $KEEB
+sudo intercept -g $KEEB | zig-out/bin/layerz | sudo uinput -d $KEEB
