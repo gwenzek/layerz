@@ -1,10 +1,14 @@
 /// Reference https://www.kernel.org/doc/html/v4.15/input/event-codes.html
 const std = @import("std");
 const testing = std.testing;
-const io = std.io;
 const math = std.math;
 const log = std.log.scoped(.layerz);
-pub const linux = @cImport(@cInclude("linux/input.h"));
+pub const linux = @cImport({
+    @cInclude("linux/input.h");
+    @cInclude("libevdev.h");
+});
+
+const providers = @import("providers.zig");
 
 var _start_time: i64 = -1;
 var _start_time_ns: i64 = 0;
@@ -215,49 +219,6 @@ const sync_dropped = InputEvent{
 
 var _special_release_enter: InputEvent = undefined;
 
-pub const StdIoProvider = struct {
-    stdin: std.fs.File,
-    stdout: std.fs.File,
-
-    pub fn init() StdIoProvider {
-        return .{
-            .stdin = io.getStdIn(),
-            .stdout = io.getStdOut(),
-        };
-    }
-
-    fn deinit(self: *TestProvider) void {
-        _ = self;
-    }
-
-    pub fn write_event(self: *StdIoProvider, event: InputEvent) void {
-        const buffer = std.mem.asBytes(&event);
-        log.debug("wrote {}", .{event});
-        if (event.code == resolve("CAPSLOCK")) {
-            log.warn("!!! writing CAPSLOCK !!!", .{});
-            std.debug.panic("CAPSLOCK shouldn't be emitted", .{});
-        }
-        // TODO: use io uring ?
-        // currently we need a syscall to write a single event
-        _ = self.stdout.write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
-    }
-
-    pub fn read_event(self: *StdIoProvider, timeout_ms: u32) ?InputEvent {
-        // TODO: handle timeout
-        // TODO: use tigerbeetle_io to read using io_uring
-        // TODO: read directly from device instead of using intercept
-        _ = timeout_ms;
-        var input: InputEvent = undefined;
-        const buffer = std.mem.asBytes(&input);
-        if (self.stdin.read(buffer)) |bytes_read| {
-            if (bytes_read == 0) return null;
-            return input;
-        } else |err| {
-            std.debug.panic("Couldn't read event from stdin: {}", .{err});
-        }
-    }
-};
-
 pub const TestProvider = struct {
     outputs: std.ArrayList(InputEvent),
     inputs: []const InputEvent,
@@ -274,7 +235,7 @@ pub const TestProvider = struct {
         };
     }
 
-    fn deinit(self: *TestProvider) void {
+    pub fn deinit(self: *TestProvider) void {
         self.outputs.deinit();
     }
 
@@ -305,9 +266,9 @@ pub const TestProvider = struct {
     }
 };
 
-pub fn stdioKeyboard(layout: []const Layer) KeyboardState(StdIoProvider) {
-    const provider = StdIoProvider.init();
-    var keeb = KeyboardState(StdIoProvider){
+pub fn stdioKeyboard(layout: []const Layer) KeyboardState(providers.EvdevProvider) {
+    const provider = providers.EvdevProvider.init("/dev/input/by-path/platform-i8042-serio-0-event-kbd") catch |err| std.debug.panic("can't open device {}", .{err});
+    var keeb = KeyboardState(providers.EvdevProvider){
         .layout = layout,
         .event_provider = provider,
     };
@@ -346,8 +307,8 @@ pub fn KeyboardState(Provider: anytype) type {
         ) void;
 
         pub fn init(self: *Self) void {
-            // Release enter key. This is needed when you're typing f
-            // TODO: this doesn't work
+            // Release enter key. This is needed when you're launching ./layerz from a terminal
+            // Apparently we need to delay the keyboard "grabbing" until after enter is released
             _start_time = std.time.timestamp();
             _special_release_enter = input_event(KEY_RELEASE, "ENTER", std.math.lossyCast(f64, _start_time));
             self.writer(_special_release_enter);

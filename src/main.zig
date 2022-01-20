@@ -37,6 +37,8 @@ pub fn main() anyerror!void {
     // l.map(&layer, "RIGHT", m_right);
     // l.map(&layer, "LEFT", m_left);
 
+    // TODO: use DeviceProvider or StdioProvider depending on the input args
     var keyboard = l.stdioKeyboard(&[_]l.Layer{ layer, mod_layer });
+    defer keyboard.deinit();
     keyboard.loop();
 }
