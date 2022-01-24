@@ -86,15 +86,17 @@ pub const EvdevProvider = struct {
         // TODO: delay grabbing to first press to allow releases that happened before to propagate
         rc = evdev.libevdev_grab(dev, evdev.LIBEVDEV_GRAB);
         if (rc < 0) {
+            log.err("Device {s} is already owned by another process !", .{name});
             return error.SharingViolation;
         }
-        log.debug("libedev reading from device at {s} ({*})", .{ name, dev });
-
-        return EvdevProvider{
+        log.debug("libedev reading from device at {s}", .{name});
+        const self = EvdevProvider{
             .device = dev.?,
             .input = file,
             .stdout = io.getStdOut(),
         };
+        self.beep();
+        return self;
     }
 
     pub fn deinit(self: *EvdevProvider) void {
@@ -130,5 +132,14 @@ pub const EvdevProvider = struct {
             // nice formatting. Maybe there is a better way.
             return @bitCast(InputEvent, input);
         }
+    }
+
+    pub fn beep(self: *const EvdevProvider) void {
+        // Write a bell char to the tty.
+        // Normally I should be able to use ioctl to write EV_SND to the device
+        // but haven't managed to do so yet.
+        _ = self;
+        const console = std.fs.openFileAbsoluteZ("/dev/tty", .{ .write = true }) catch return;
+        _ = console.writer().writeByte(7) catch return;
     }
 };
