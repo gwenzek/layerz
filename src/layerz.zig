@@ -93,6 +93,7 @@ const LayerzActionKind = enum {
     transparent,
     mouse_move,
     beep,
+    hook,
 };
 
 pub const LayerzActionTap = struct { key: u8 };
@@ -102,6 +103,7 @@ pub const LayerzActionLayerToggle = struct { layer: u8 };
 pub const LayerzActionDisabled = struct {};
 pub const LayerzActionTransparent = struct {};
 pub const LayerzActionBeep = struct {};
+pub const LayerzActionHook = struct { f: fn () anyerror!void };
 pub const LayerzActionMouseMove = struct { key: u8 = linux.REL_X, stepX: i16 = 0, stepY: i16 = 0 };
 
 pub const LayerzAction = union(LayerzActionKind) {
@@ -115,6 +117,7 @@ pub const LayerzAction = union(LayerzActionKind) {
     /// Maybe the device need to be registered with mouse capabilities ?
     mouse_move: LayerzActionMouseMove,
     beep: LayerzActionBeep,
+    hook: LayerzActionHook,
 };
 
 const NUM_KEYS = 256;
@@ -377,6 +380,7 @@ pub fn KeyboardState(Provider: anytype) type {
                 .disabled => |val| keyboard.handle_disabled(val, input),
                 .transparent => |val| keyboard.handle_transparent(val, input),
                 .beep => |val| keyboard.handle_beep(val, input),
+                .hook => |val| keyboard.handle_hook(val, input),
                 .mouse_move => |val| keyboard.handle_mouse_move(val, input),
             }
         }
@@ -520,6 +524,16 @@ pub fn KeyboardState(Provider: anytype) type {
 
             _ = beep;
             @field(Provider, "beep")(&keyboard.event_provider);
+        }
+
+        fn handle_hook(keyboard: *Self, hook: LayerzActionHook, input: InputEvent) void {
+            _ = keyboard;
+            if (input.value != KEY_PRESS) return;
+
+            hook.f() catch |err| {
+                log.err("Custom hook {} failed with {}", .{ hook.f, err });
+                return;
+            };
         }
 
         fn handle_mouse_move(keyboard: *Self, mouse_move: LayerzActionMouseMove, input: InputEvent) void {
