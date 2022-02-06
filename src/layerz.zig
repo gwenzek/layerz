@@ -94,7 +94,6 @@ const LayerzActionKind = enum {
     disabled,
     transparent,
     mouse_move,
-    beep,
     hook,
 };
 
@@ -104,7 +103,6 @@ pub const LayerzActionLayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 2
 pub const LayerzActionLayerToggle = struct { layer: u8 };
 pub const LayerzActionDisabled = struct {};
 pub const LayerzActionTransparent = struct {};
-pub const LayerzActionBeep = struct {};
 pub const LayerzActionHook = struct { f: fn () anyerror!void };
 pub const LayerzActionMouseMove = struct { key: u8 = linux.REL_X, stepX: i16 = 0, stepY: i16 = 0 };
 
@@ -118,7 +116,6 @@ pub const LayerzAction = union(LayerzActionKind) {
     /// Move the mouse or wheel. This doesn't seem to work on my keyboard.
     /// Maybe the device need to be registered with mouse capabilities ?
     mouse_move: LayerzActionMouseMove,
-    beep: LayerzActionBeep,
     hook: LayerzActionHook,
 };
 
@@ -392,7 +389,6 @@ pub fn KeyboardState(Provider: anytype) type {
                 .layer_hold => |val| keyboard.handle_layer_hold(val, input),
                 .disabled => |val| keyboard.handle_disabled(val, input),
                 .transparent => |val| keyboard.handle_transparent(val, input),
-                .beep => |val| keyboard.handle_beep(val, input),
                 .hook => |val| keyboard.handle_hook(val, input),
                 .mouse_move => |val| keyboard.handle_mouse_move(val, input),
             }
@@ -530,14 +526,6 @@ pub fn KeyboardState(Provider: anytype) type {
                     else => keyboard.handle_action(base_action, event),
                 }
             }
-        }
-
-        fn handle_beep(keyboard: *Self, beep: LayerzActionBeep, input: InputEvent) void {
-            if (!@hasDecl(Provider, "beep")) return;
-            if (input.value != KEY_PRESS) return;
-
-            _ = beep;
-            @field(Provider, "beep")(&keyboard.event_provider);
         }
 
         fn handle_hook(keyboard: *Self, hook: LayerzActionHook, input: InputEvent) void {

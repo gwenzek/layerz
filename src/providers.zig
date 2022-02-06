@@ -99,7 +99,6 @@ pub const EvdevProvider = struct {
             .stdout = std.fs.File{ .handle = c.libevdev_uinput_get_fd(out_dev) },
             .out = out_dev,
         };
-        self.beep();
         return self;
     }
 
@@ -144,15 +143,6 @@ pub const EvdevProvider = struct {
             return @bitCast(InputEvent, input);
         }
     }
-
-    pub fn beep(self: *const EvdevProvider) void {
-        // Write a bell char to the tty.
-        // Normally I should be able to use ioctl to write EV_SND to the device
-        // but haven't managed to do so yet.
-        _ = self;
-        const console = std.fs.openFileAbsoluteZ("/dev/tty", .{ .write = true }) catch return;
-        _ = console.writer().writeByte(7) catch return;
-    }
 };
 
 fn allocOutputDevice(input: *const c.libevdev) !*c.libevdev_uinput {
@@ -169,6 +159,7 @@ fn allocOutputDevice(input: *const c.libevdev) !*c.libevdev_uinput {
     // copyAttr("driver_version", input, output);  // not read in uinput
 
     _ = c.libevdev_enable_property(output, c.INPUT_PROP_POINTER);
+    // TODO: copy all props at once
     copyProp(c.INPUT_PROP_DIRECT, input, output);
     copyProp(c.INPUT_PROP_BUTTONPAD, input, output);
     copyProp(c.INPUT_PROP_SEMI_MT, input, output);
@@ -217,6 +208,8 @@ fn enableEvents(
         _ = c.libevdev_enable_event_code(output, c.EV_SYN, syn_code, null);
     }
 
+    // TODO: directly set output.key_bits to 1, ... 1
+    // This requires importing libevdev-int.h
     var key_code: c_uint = 0;
     while (key_code < c.KEY_MAX) : (key_code += 1) {
         _ = c.libevdev_enable_event_code(output, c.EV_KEY, key_code, null);

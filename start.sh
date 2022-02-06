@@ -16,6 +16,6 @@ fi
 zig build
 
 # sudo uinput -d $KEEB -p > device.yaml
-# sudo zig-out/bin/layerz | sudo uinput -d $KEEB
+# sudo intercept $KEEB | zig-out/bin/layerz | sudo uinput -d $KEEB
 
-sudo zig-out/bin/layerz
+sudo zig-out/bin/layerz $KEEB

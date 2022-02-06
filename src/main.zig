@@ -14,6 +14,7 @@ const s = l.s;
 const __ = l.__;
 
 const reset_usb = l.LayerzAction{ .hook = .{ .f = resetUsbDevices } };
+const beep = l.LayerzAction{ .hook = .{ .f = makeBeep } };
 
 pub fn main() anyerror!void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
@@ -39,14 +40,16 @@ pub fn main() anyerror!void {
     l.map(&layer, "DOWN", m_down);
     l.map(&layer, "RIGHT", m_right);
     l.map(&layer, "LEFT", m_left);
+    // could "beep" be useful for multi key combos ?
+    l.map(&layer, "ESC", beep);
 
-    log.info("received {} args", .{args.len});
     if (args.len < 2) {
         // TODO: use DeviceProvider or StdioProvider depending on the input args
         var keyboard = l.stdioKeyboard(&[_]l.Layer{ layer, mod_layer });
         defer keyboard.deinit();
         keyboard.loop();
     } else {
+        log.info("Reading/writing keyboard events from stdin/out", .{});
         var keyboard = l.evdevKeyboard(&[_]l.Layer{ layer, mod_layer }, args[1]);
         defer keyboard.deinit();
         keyboard.loop();
@@ -61,6 +64,7 @@ fn resetUsbDevices() !void {
         const id = try std.fmt.parseUnsigned(u8, dev.name, 10);
         if (id <= 10) continue;
         // Firsts ports are for built-in peripherals
+        log.info("Reading/writing keyboard events from stdin/out", .{});
 
         const dev_fs = try devices.openFile(dev.name, .{ .write = true });
         // Defined in linux kernel, in usbdevice_fs.h
@@ -70,4 +74,12 @@ fn resetUsbDevices() !void {
 
         log.info("Resetted USB device {s}/{s}", .{ hub, dev.name });
     }
+}
+
+pub fn makeBeep() !void {
+    // Write a bell char to the tty.
+    // Normally I should be able to use ioctl to write EV_SND to the device
+    // but haven't managed to do so yet.
+    const console = std.fs.openFileAbsoluteZ("/dev/tty", .{ .write = true }) catch return;
+    _ = console.writer().writeByte(7) catch return;
 }
