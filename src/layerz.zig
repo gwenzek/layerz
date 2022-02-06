@@ -38,22 +38,23 @@ pub const InputEvent = extern struct {
                 KEY_RELEASE => "KEY_RELEASE",
                 KEY_REPEAT => "KEY_REPEAT",
                 else => {
-                    try std.fmt.format(writer, "{{ EV_KEY({d}, {d}) ({d:.3}) }}", .{ input.value, input.code, time });
+                    try std.fmt.format(writer, "{{ EV_KEY({x}, {x}) ({d:.3}) }}", .{ input.value, input.code, time });
                     return;
                 },
             };
             try std.fmt.format(writer, "{{{s}({s}) ({d:.3})}}", .{ value, resolveName(input.code), time });
         } else {
-            const ev_type = switch (input.value) {
+            const ev_type = switch (input.type) {
                 linux.EV_REL => "EV_REL",
                 linux.EV_SYN => "EV_SYN",
+                linux.EV_ABS => "EV_ABS",
                 linux.EV_MSC => "EV_MSC",
                 else => {
-                    try std.fmt.format(writer, "{{EV({d})({d}, {d}) ({d:.3})}}", .{ input.type, input.code, input.value, time });
+                    try std.fmt.format(writer, "{{EV({x})({x}, {d}) ({d:.3})}}", .{ input.type, input.code, input.value, time });
                     return;
                 },
             };
-            try std.fmt.format(writer, "{{{s}({d}, {d}) ({d:.3})}}", .{ ev_type, input.code, input.value, time });
+            try std.fmt.format(writer, "{{{s}({x}, {d}) ({d:.3})}}", .{ ev_type, input.code, input.value, time });
         }
     }
 };
@@ -273,9 +274,19 @@ pub const TestProvider = struct {
     }
 };
 
-pub fn stdioKeyboard(layout: []const Layer) KeyboardState(providers.EvdevProvider) {
-    const provider = providers.EvdevProvider.init("/dev/input/by-path/platform-i8042-serio-0-event-kbd") catch |err| std.debug.panic("can't open device {}", .{err});
+pub fn evdevKeyboard(layout: []const Layer, name: [:0]const u8) KeyboardState(providers.EvdevProvider) {
+    const provider = providers.EvdevProvider.init(name) catch |err| std.debug.panic("can't open device {s} {}", .{ name, err });
     var keeb = KeyboardState(providers.EvdevProvider){
+        .layout = layout,
+        .event_provider = provider,
+    };
+    keeb.init();
+    return keeb;
+}
+
+pub fn stdioKeyboard(layout: []const Layer) KeyboardState(providers.StdIoProvider) {
+    const provider = providers.StdIoProvider.init();
+    var keeb = KeyboardState(providers.StdIoProvider){
         .layout = layout,
         .event_provider = provider,
     };
@@ -349,12 +360,13 @@ pub fn KeyboardState(Provider: anytype) type {
         /// Key presses happen on the current layer,
         /// While key releases happen on the layer at the time of the press.
         fn resolve_action(keyboard: *Self, input: InputEvent) LayerzAction {
+            std.debug.assert(input.type == linux.EV_KEY);
             const key_layer = switch (input.value) {
-                KEY_REPEAT => {
-                    // TODO: check if it's right to swallow repeats event
-                    // linux console, X, wayland handles repeat
-                    return xx;
-                },
+                KEY_REPEAT =>
+                // TODO: check if it's right to swallow repeats event
+                // linux console, X, wayland handles repeat
+                keyboard.layer,
+
                 KEY_PRESS => keyboard.layer,
                 KEY_RELEASE => keyboard.key_state[input.code],
                 else => {
@@ -387,6 +399,7 @@ pub fn KeyboardState(Provider: anytype) type {
         }
 
         fn handle_tap(keyboard: *Self, tap: LayerzActionTap, input: InputEvent) void {
+            if (input.value == KEY_REPEAT) return;
             var output = input;
             output.code = tap.key;
             keyboard.writer(output);
@@ -395,6 +408,7 @@ pub fn KeyboardState(Provider: anytype) type {
         /// Output two keys. This is useful for modifiers.
         // TODO: support more than one mod
         fn handle_mod_tap(keyboard: *Self, tap: LayerzActionModTap, input: InputEvent) void {
+            if (input.value == KEY_REPEAT) return;
             var output = input;
             output.code = tap.key;
             var mod_press: InputEvent = output;
@@ -488,8 +502,7 @@ pub fn KeyboardState(Provider: anytype) type {
                     self.layer = layer_hold.layer;
                 }
                 // Call regular key handling code with the new layer
-                const next_action = self.resolve_action(event);
-                self.handle_action(next_action, event);
+                self.handle(event);
                 // Continue the while loop while we haven't found a key_press
                 return event.value == KEY_PRESS;
             }
@@ -544,12 +557,16 @@ pub fn KeyboardState(Provider: anytype) type {
             output.code = mouse_move.key;
             switch (mouse_move.key) {
                 linux.REL_X => {
-                    output.code = linux.REL_X;
-                    output.value = mouse_move.stepX;
-                    keyboard.writer(output);
-                    output.code = linux.REL_Y;
-                    output.value = mouse_move.stepY;
-                    keyboard.writer(output);
+                    if (mouse_move.stepX != 0) {
+                        output.code = linux.REL_X;
+                        output.value = mouse_move.stepX;
+                        keyboard.writer(output);
+                    }
+                    if (mouse_move.stepY != 0) {
+                        output.code = linux.REL_Y;
+                        output.value = mouse_move.stepY;
+                        keyboard.writer(output);
+                    }
                 },
                 linux.REL_WHEEL, linux.REL_DIAL => {
                     output.value = mouse_move.stepX;
@@ -889,7 +906,6 @@ test "Mouse Move" {
 
     const expected = [_]InputEvent{
         _event(linux.EV_REL, linux.REL_X, 10, 0.0),
-        _event(linux.EV_REL, linux.REL_Y, 0, 0.0),
         _event(linux.EV_REL, linux.REL_X, -10, 0.2),
         _event(linux.EV_REL, linux.REL_Y, 10, 0.2),
     };

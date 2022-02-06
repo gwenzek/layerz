@@ -36,6 +36,7 @@ pub fn build(b: *std.build.Builder) void {
     latency.install();
 
     const tests = b.addTest("src/layerz.zig");
+    tests.linkLibC();
     tests.addIncludeDir("src/include");
     b.step("test", "Tests").dependOn(&tests.step);
 }

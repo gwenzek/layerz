@@ -2,10 +2,12 @@ const std = @import("std");
 const l = @import("layerz.zig");
 const log = std.log;
 
-const m_up = l.LayerzAction{ .mouse_move = .{ .stepX = 10 } };
-const m_down = l.LayerzAction{ .mouse_move = .{ .stepX = -10 } };
-const m_left = l.LayerzAction{ .mouse_move = .{ .stepY = 10 } };
-const m_right = l.LayerzAction{ .mouse_move = .{ .stepY = -10 } };
+// Moves the mouse by 20mm increments.
+const m_step = 20;
+const m_up = l.LayerzAction{ .mouse_move = .{ .stepY = -m_step } };
+const m_down = l.LayerzAction{ .mouse_move = .{ .stepY = m_step } };
+const m_right = l.LayerzAction{ .mouse_move = .{ .stepX = m_step } };
+const m_left = l.LayerzAction{ .mouse_move = .{ .stepX = -m_step } };
 
 const k = l.k;
 const s = l.s;
@@ -18,8 +20,6 @@ pub fn main() anyerror!void {
     const gpa = general_purpose_allocator.allocator();
     const args = try std.process.argsAlloc(gpa);
     defer std.process.argsFree(gpa, args);
-
-    std.log.info("All your codebase are belong to us.", .{});
 
     // Here you can describe your different layers.
     var layer = l.PASSTHROUGH;
@@ -35,15 +35,22 @@ pub fn main() anyerror!void {
         .{ __, s("EQUAL"), s("MINUS"), k("MINUS"), k("EQUAL"), s("GRAVE"), k("ESC"), k("HOME"), k("PAGEUP"), k("PAGEDOWN"), k("END"), __ },
     );
 
-    // l.map(&layer, "UP", m_up);
-    // l.map(&layer, "DOWN", m_down);
-    // l.map(&layer, "RIGHT", m_right);
-    // l.map(&layer, "LEFT", m_left);
+    l.map(&layer, "UP", m_up);
+    l.map(&layer, "DOWN", m_down);
+    l.map(&layer, "RIGHT", m_right);
+    l.map(&layer, "LEFT", m_left);
 
-    // TODO: use DeviceProvider or StdioProvider depending on the input args
-    var keyboard = l.stdioKeyboard(&[_]l.Layer{ layer, mod_layer });
-    defer keyboard.deinit();
-    keyboard.loop();
+    log.info("received {} args", .{args.len});
+    if (args.len < 2) {
+        // TODO: use DeviceProvider or StdioProvider depending on the input args
+        var keyboard = l.stdioKeyboard(&[_]l.Layer{ layer, mod_layer });
+        defer keyboard.deinit();
+        keyboard.loop();
+    } else {
+        var keyboard = l.evdevKeyboard(&[_]l.Layer{ layer, mod_layer }, args[1]);
+        defer keyboard.deinit();
+        keyboard.loop();
+    }
 }
 
 fn resetUsbDevices() !void {

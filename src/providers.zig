@@ -157,7 +157,7 @@ pub const EvdevProvider = struct {
 
 fn allocOutputDevice(input: *const c.libevdev) !*c.libevdev_uinput {
     const out = c.libevdev_new();
-    if (out == null) return error.NoDevice;
+    if (out == null) return error.OutOfMemory;
     const output = out.?;
 
     copyAttr("name", input, output);
@@ -168,7 +168,7 @@ fn allocOutputDevice(input: *const c.libevdev) !*c.libevdev_uinput {
     copyAttr("id_bustype", input, output);
     // copyAttr("driver_version", input, output);  // not read in uinput
 
-    copyProp(c.INPUT_PROP_POINTER, input, output);
+    _ = c.libevdev_enable_property(output, c.INPUT_PROP_POINTER);
     copyProp(c.INPUT_PROP_DIRECT, input, output);
     copyProp(c.INPUT_PROP_BUTTONPAD, input, output);
     copyProp(c.INPUT_PROP_SEMI_MT, input, output);
@@ -204,13 +204,14 @@ fn copyProp(
     }
 }
 
+/// TODO: here I'm just copying code from "uinput.cpp"
+/// I'm not sure why we need to enable those events,
+/// it seems to work fine without eg enabling keys.
+/// And this code seems to also sometimes disable the trackpad on launch.
 fn enableEvents(
     input: *const c.libevdev,
     output: *c.libevdev,
 ) void {
-    _ = input;
-    _ = output;
-
     var syn_code: c_uint = 0;
     while (syn_code <= c.SYN_DROPPED) : (syn_code += 1) {
         _ = c.libevdev_enable_event_code(output, c.EV_SYN, syn_code, null);
@@ -221,9 +222,9 @@ fn enableEvents(
         _ = c.libevdev_enable_event_code(output, c.EV_KEY, key_code, null);
     }
 
-    var sound_code: c_uint = 0;
-    while (sound_code <= c.SND_TONE) : (sound_code += 1) {
-        _ = c.libevdev_enable_event_code(output, c.EV_SND, sound_code, null);
+    var mouse_code: c_uint = 0;
+    while (mouse_code < c.REL_MAX) : (mouse_code += 1) {
+        _ = c.libevdev_enable_event_code(output, c.EV_REL, mouse_code, null);
     }
 
     var delay: c_int = undefined;
@@ -231,60 +232,4 @@ fn enableEvents(
     _ = c.libevdev_get_repeat(input, &delay, &period);
     _ = c.libevdev_enable_event_code(output, c.EV_REP, c.REP_DELAY, &delay);
     _ = c.libevdev_enable_event_code(output, c.EV_REP, c.REP_PERIOD, &period);
-
-    // TODO: enable mouse events (EV_REL)
 }
-
-//             for (const auto &event_type : event_types) {
-//                 auto event_type_string = event_type.first.as<string>();
-//                 else if (event_type_string == "EV_ABS") {
-//                     for (const auto &axis : event_type.second) {
-//                         input_absinfo absinfo = {};
-//                         if (auto axis_value = axis.second["VALUE"])
-//                             absinfo.value = axis_value.as<int>();
-//                         if (auto axis_min = axis.second["MIN"])
-//                             absinfo.minimum = axis_min.as<int>();
-//                         if (auto axis_max = axis.second["MAX"])
-//                             absinfo.maximum = axis_max.as<int>();
-//                         if (auto axis_flat = axis.second["FLAT"])
-//                             absinfo.flat = axis_flat.as<int>();
-//                         if (auto fuzz = axis.second["FUZZ"])
-//                             absinfo.fuzz = fuzz.as<int>();
-//                         if (auto res = axis.second["RES"])
-//                             absinfo.resolution = res.as<int>();
-
-//                         if (!axis.second["VALUE"] && axis.second["MAX"])
-//                             absinfo.value = absinfo.maximum;
-//                         if (!axis.second["VALUE"] && axis.second["MIN"])
-//                             absinfo.value = absinfo.minimum;
-
-//                         auto axis_code = libevdev_event_code_from_name(
-//                             EV_ABS, axis.first.as<string>().c_str());
-//                         if (axis_code != -1)
-//                             libevdev_enable_event_code(dev, EV_ABS, axis_code,
-//                                                        &absinfo);
-//                     }
-//                 } else {
-//                     auto event_type_code = libevdev_event_type_from_name(
-//                         event_type_string.c_str());
-
-//                     for (const auto &event : event_type.second) {
-//                         auto event_string = event.as<string>();
-//                         if (is_int(event_string))
-//                             libevdev_enable_event_code(dev, event_type_code,
-//                                                        stoi(event_string),
-//                                                        nullptr);
-//                         else {
-//                             auto event_code = libevdev_event_code_from_name(
-//                                 event_type_code, event_string.c_str());
-//                             if (event_code != -1)
-//                                 libevdev_enable_event_code(dev, event_type_code,
-//                                                            event_code, nullptr);
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     return dev;
-// }
