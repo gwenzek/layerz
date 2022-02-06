@@ -10,8 +10,9 @@ pub const linux = @cImport({
 });
 
 const providers = @import("providers.zig");
+const KeyboardState = @import("handler.zig").KeyboardState;
 
-var _start_time: i64 = -1;
+pub var _start_time: i64 = -1;
 var _start_time_ns: i64 = 0;
 /// This is a port of linux input_event struct.
 /// Linux kernel has different way of storing the time depending on the architecture
@@ -82,11 +83,11 @@ test "InputEvent matches input_event byte by byte" {
 
 // Those values are documented in linux doc:
 // https://www.kernel.org/doc/html/v4.15/input/event-codes.html#ev-key
-const KEY_PRESS = 1;
-const KEY_RELEASE = 0;
-const KEY_REPEAT = 2;
+pub const KEY_PRESS = 1;
+pub const KEY_RELEASE = 0;
+pub const KEY_REPEAT = 2;
 
-const LayerzActionKind = enum {
+const ActionKind = enum {
     tap,
     mod_tap,
     layer_hold,
@@ -97,30 +98,30 @@ const LayerzActionKind = enum {
     hook,
 };
 
-pub const LayerzActionTap = struct { key: u8 };
-pub const LayerzActionModTap = struct { key: u8, mod: u8 };
-pub const LayerzActionLayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 200 };
-pub const LayerzActionLayerToggle = struct { layer: u8 };
-pub const LayerzActionDisabled = struct {};
-pub const LayerzActionTransparent = struct {};
-pub const LayerzActionHook = struct { f: fn () anyerror!void };
-pub const LayerzActionMouseMove = struct { key: u8 = linux.REL_X, stepX: i16 = 0, stepY: i16 = 0 };
-
-pub const LayerzAction = union(LayerzActionKind) {
-    tap: LayerzActionTap,
-    mod_tap: LayerzActionModTap,
-    layer_hold: LayerzActionLayerHold,
-    layer_toggle: LayerzActionLayerToggle,
-    disabled: LayerzActionDisabled,
-    transparent: LayerzActionTransparent,
+pub const Action = union(ActionKind) {
+    tap: Tap,
+    mod_tap: ModTap,
+    layer_hold: LayerHold,
+    layer_toggle: LayerToggle,
+    disabled: Disabled,
+    transparent: Transparent,
     /// Move the mouse or wheel. This doesn't seem to work on my keyboard.
     /// Maybe the device need to be registered with mouse capabilities ?
-    mouse_move: LayerzActionMouseMove,
-    hook: LayerzActionHook,
+    mouse_move: MouseMove,
+    hook: Hook,
+
+    pub const Tap = struct { key: u8 };
+    pub const ModTap = struct { key: u8, mod: u8 };
+    pub const LayerHold = struct { key: u8, layer: u8, delay_ms: u16 = 200 };
+    pub const LayerToggle = struct { layer: u8 };
+    pub const Disabled = struct {};
+    pub const Transparent = struct {};
+    pub const Hook = struct { f: fn () anyerror!void };
+    pub const MouseMove = struct { key: u8 = linux.REL_X, stepX: i16 = 0, stepY: i16 = 0 };
 };
 
-const NUM_KEYS = 256;
-pub const Layer = [NUM_KEYS]LayerzAction;
+pub const NUM_KEYS = 256;
+pub const Layer = [NUM_KEYS]Action;
 
 pub fn resolve(comptime keyname: []const u8) u8 {
     const fullname = "KEY_" ++ keyname;
@@ -130,7 +131,7 @@ pub fn resolve(comptime keyname: []const u8) u8 {
     return @field(linux, fullname);
 }
 
-const _keynames = [_][]const u8{ "TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "ENTER", "LCTRL", "A", "S", "D", "F", "G", "H" };
+const _keynames = [_][]const u8{ "ESC", "TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "ENTER", "LCTRL", "A", "S", "D", "F", "G", "H" };
 const _first_key_index = @as(u16, resolve(_keynames[0]));
 
 pub fn resolveName(keycode: u16) []const u8 {
@@ -147,54 +148,54 @@ test "Resolve keyname" {
 }
 
 /// Layout DSL: tap the given key
-pub fn k(comptime keyname: []const u8) LayerzAction {
+pub fn k(comptime keyname: []const u8) Action {
     return .{ .tap = .{ .key = resolve(keyname) } };
 }
 
 /// Layout DSL: tap shift and the given key
-pub fn s(comptime keyname: []const u8) LayerzAction {
+pub fn s(comptime keyname: []const u8) Action {
     return .{
         .mod_tap = .{ .key = resolve(keyname), .mod = linux.KEY_LEFTSHIFT },
     };
 }
 
 /// Layout DSL: tap ctrl and the given key
-pub fn ctrl(comptime keyname: []const u8) LayerzAction {
+pub fn ctrl(comptime keyname: []const u8) Action {
     return .{
         .mod_tap = .{ .key = resolve(keyname), .mod = linux.KEY_LEFTCTRL },
     };
 }
 
 /// Layout DSL: tap altgr (right alt) and the given key. Useful for inputing localized chars.
-pub fn altgr(comptime keyname: []const u8) LayerzAction {
+pub fn altgr(comptime keyname: []const u8) Action {
     return .{
         .mod_tap = .{ .key = resolve(keyname), .mod = linux.KEY_RIGHTALT },
     };
 }
 
 /// Layout DSL: toggle a layer
-pub fn lt(layer: u8) LayerzAction {
+pub fn lt(layer: u8) Action {
     return .{
         .layer_toggle = .{ .layer = layer },
     };
 }
 
 /// Layout DSL: toggle a layer when hold, tap a key when tapped
-pub fn lh(comptime keyname: []const u8, layer: u8) LayerzAction {
+pub fn lh(comptime keyname: []const u8, layer: u8) Action {
     return .{
         .layer_hold = .{ .layer = layer, .key = resolve(keyname) },
     };
 }
 
 /// Layout DSL: disable a key
-pub const xx: LayerzAction = .{ .disabled = .{} };
+pub const xx: Action = .{ .disabled = .{} };
 
 /// Layout DSL: pass the key to the layer below
-pub const __: LayerzAction = .{ .transparent = .{} };
+pub const __: Action = .{ .transparent = .{} };
 
-pub const PASSTHROUGH: Layer = [_]LayerzAction{__} ** NUM_KEYS;
+pub const PASSTHROUGH: Layer = [_]Action{__} ** NUM_KEYS;
 
-pub fn map(layer: *Layer, comptime src_key: []const u8, action: LayerzAction) void {
+pub fn map(layer: *Layer, comptime src_key: []const u8, action: Action) void {
     layer[resolve(src_key)] = action;
 }
 
@@ -204,7 +205,7 @@ pub fn map(layer: *Layer, comptime src_key: []const u8, action: LayerzAction) vo
 /// For example, motion of a mouse may set the REL_X and REL_Y values for one motion,
 /// then emit a SYN_REPORT.
 /// The next motion will emit more REL_X and REL_Y values and send another SYN_REPORT.
-const sync_report = InputEvent{
+pub const sync_report = InputEvent{
     .type = linux.EV_SYN,
     .code = linux.SYN_REPORT,
     .value = 0,
@@ -222,7 +223,7 @@ const sync_dropped = InputEvent{
     .time = undefined,
 };
 
-var _special_release_enter: InputEvent = undefined;
+pub var _special_release_enter: InputEvent = undefined;
 
 pub const TestProvider = struct {
     outputs: std.ArrayList(InputEvent),
@@ -271,6 +272,17 @@ pub const TestProvider = struct {
     }
 };
 
+pub fn testKeyboardAlloc(layout: []const Layer, events: []const InputEvent) KeyboardState(TestProvider) {
+    const provider = TestProvider.init(events);
+    var keeb = KeyboardState(TestProvider){
+        .layout = layout,
+        .event_provider = provider,
+    };
+    keeb.init();
+    _start_time = 0;
+    return keeb;
+}
+
 pub fn evdevKeyboard(layout: []const Layer, name: [:0]const u8) KeyboardState(providers.EvdevProvider) {
     const provider = providers.EvdevProvider.init(name) catch |err| std.debug.panic("can't open device {s} {}", .{ name, err });
     var keeb = KeyboardState(providers.EvdevProvider){
@@ -291,303 +303,7 @@ pub fn stdioKeyboard(layout: []const Layer) KeyboardState(providers.StdIoProvide
     return keeb;
 }
 
-pub fn testKeyboardAlloc(layout: []const Layer, events: []const InputEvent) KeyboardState(TestProvider) {
-    const provider = TestProvider.init(events);
-    var keeb = KeyboardState(TestProvider){
-        .layout = layout,
-        .event_provider = provider,
-    };
-    keeb.init();
-    _start_time = 0;
-    return keeb;
-}
-
-pub fn KeyboardState(Provider: anytype) type {
-    return struct {
-        layout: []const Layer,
-        event_provider: Provider,
-
-        // This is the mutable state of the keyboard.
-        // We are saving the current layer and the current layer for each key.
-        // Every key release uses the layer at the time of the last press for this key.
-        base_layer: u8 = 0,
-        layer: u8 = 0,
-        key_state: [NUM_KEYS]u8 = [_]u8{0} ** NUM_KEYS,
-
-        const Self = @This();
-        pub const DelayedHandler = fn (
-            keyboard: *Self,
-            event: InputEvent,
-            next_event: InputEvent,
-        ) void;
-
-        pub fn init(self: *Self) void {
-            // Release enter key. This is needed when you're launching ./layerz from a terminal
-            // Apparently we need to delay the keyboard "grabbing" until after enter is released
-            _start_time = std.time.timestamp();
-            _special_release_enter = input_event(KEY_RELEASE, "ENTER", std.math.lossyCast(f64, _start_time));
-            self.writer(_special_release_enter);
-            self.writer(sync_report);
-
-            // TODO: should we resolve the transparent actions now ?
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.event_provider.deinit();
-        }
-
-        pub fn handle(keyboard: *Self, input: InputEvent) void {
-            if (input.type == linux.EV_MSC and input.code == linux.MSC_SCAN) {
-                keyboard.writer(input);
-                return;
-            }
-
-            // forward anything that is not a key event, including sync events
-            if (input.type != linux.EV_KEY or input.code >= NUM_KEYS) {
-                keyboard.writer(input);
-                return;
-            }
-            log.debug("read {}", .{input});
-
-            const action = keyboard.resolve_action(input);
-            keyboard.handle_action(action, input);
-        }
-
-        /// Get the layer on which the event happened.
-        /// Key presses happen on the current layer,
-        /// While key releases happen on the layer at the time of the press.
-        fn resolve_action(keyboard: *Self, input: InputEvent) LayerzAction {
-            std.debug.assert(input.type == linux.EV_KEY);
-            const key_layer = switch (input.value) {
-                KEY_REPEAT =>
-                // TODO: check if it's right to swallow repeats event
-                // linux console, X, wayland handles repeat
-                keyboard.layer,
-
-                KEY_PRESS => keyboard.layer,
-                KEY_RELEASE => keyboard.key_state[input.code],
-                else => {
-                    log.warn("ignoring unkown event {}", .{input});
-                    return xx;
-                },
-            };
-
-            keyboard.key_state[input.code] = key_layer;
-            if (input.code == resolve("CAPSLOCK")) {
-                log.debug("CAPSLOCK is on layer {}", .{key_layer});
-            }
-            return keyboard.layout[key_layer][input.code];
-        }
-
-        /// Handlers are allowed to consume more keyboard events that the one given to them.
-        fn handle_action(keyboard: *Self, action: LayerzAction, input: InputEvent) void {
-            // TODO: generate this switch ?
-            switch (action) {
-                .tap => |val| keyboard.handle_tap(val, input),
-                .mod_tap => |val| keyboard.handle_mod_tap(val, input),
-                .layer_toggle => |val| keyboard.handle_layer_toggle(val, input),
-                .layer_hold => |val| keyboard.handle_layer_hold(val, input),
-                .disabled => |val| keyboard.handle_disabled(val, input),
-                .transparent => |val| keyboard.handle_transparent(val, input),
-                .hook => |val| keyboard.handle_hook(val, input),
-                .mouse_move => |val| keyboard.handle_mouse_move(val, input),
-            }
-        }
-
-        fn handle_tap(keyboard: *Self, tap: LayerzActionTap, input: InputEvent) void {
-            if (input.value == KEY_REPEAT) return;
-            var output = input;
-            output.code = tap.key;
-            keyboard.writer(output);
-        }
-
-        /// Output two keys. This is useful for modifiers.
-        // TODO: support more than one mod
-        fn handle_mod_tap(keyboard: *Self, tap: LayerzActionModTap, input: InputEvent) void {
-            if (input.value == KEY_REPEAT) return;
-            var output = input;
-            output.code = tap.key;
-            var mod_press: InputEvent = output;
-            mod_press.code = tap.mod;
-            if (input.value == KEY_PRESS) {
-                // First press the modifier then the key.
-                keyboard.writer(mod_press);
-                keyboard.writer(output);
-
-                // Delay the modifier release to the next event
-                var next_event = keyboard.read_event(0);
-                var mod_release = mod_press;
-                mod_release.value = KEY_RELEASE;
-                keyboard.writer(mod_release);
-                if (next_event) |next| keyboard.handle(next);
-                return;
-            } else {
-                keyboard.writer(output);
-            }
-        }
-
-        /// Switch between layers
-        // TODO: could we have a startup check to see if we can get stuck on a layer ?
-        fn handle_layer_toggle(keyboard: *Self, layer_toggle: LayerzActionLayerToggle, event: InputEvent) void {
-            switch (event.value) {
-                KEY_PRESS => {
-                    if (keyboard.layer != layer_toggle.layer) {
-                        keyboard.layer = layer_toggle.layer;
-                    } else {
-                        keyboard.layer = keyboard.base_layer;
-                    }
-                },
-                else => {},
-            }
-        }
-
-        fn handle_layer_hold(self: *Self, layer_hold: LayerzActionLayerHold, event: InputEvent) void {
-            switch (event.value) {
-                KEY_PRESS => {
-                    var tap = event;
-                    tap.code = layer_hold.key;
-                    log.debug("Maybe we are holding a layer: {}. Delay tap: {}", .{ layer_hold.layer, event });
-
-                    var disambiguated = false;
-                    while (!disambiguated) {
-                        disambiguated = self.disambiguate_layer_hold(layer_hold, tap);
-                    }
-                },
-                KEY_RELEASE => {
-                    if (self.layer == layer_hold.layer) {
-                        log.debug("Disabling layer: {} on {}", .{ layer_hold.layer, event });
-                        self.layer = self.base_layer;
-                    } else {
-                        self.handle_tap(.{ .key = layer_hold.key }, event);
-                    }
-                },
-                else => {},
-            }
-        }
-
-        fn disambiguate_layer_hold(
-            self: *Self,
-            layer_hold: LayerzActionLayerHold,
-            tap: InputEvent,
-        ) bool {
-            var maybe_event = self.read_event(0);
-            if (maybe_event == null) return true;
-            const event = maybe_event.?;
-
-            if (layer_hold.key == event.code) {
-                // Another event on the layer key
-                if (event.value == KEY_RELEASE) {
-                    if (delta_ms(tap, event) < layer_hold.delay_ms) {
-                        // We have just tapped on the layer button, emit the tap and release
-                        log.debug("Quick tap on layer {})", .{layer_hold});
-                        self.writer(tap);
-                        self.handle_tap(.{ .key = layer_hold.key }, event);
-                    } else {
-                        // We have been holding for a long time, do nothing
-                    }
-                    return true;
-                } else {
-                    // This is probably a KEY_REPEAT of the hold key, let's wait for another key
-                    return false;
-                }
-            } else {
-                if (event.value == KEY_PRESS) {
-                    // TODO: handle quick typing ?
-                    // if (delta_ms(tap, event) > layer_hold.delay_ms) ...
-                    log.debug("Holding layer {}", .{layer_hold});
-                    self.layer = layer_hold.layer;
-                }
-                // Call regular key handling code with the new layer
-                self.handle(event);
-                // Continue the while loop while we haven't found a key_press
-                return event.value == KEY_PRESS;
-            }
-        }
-
-        /// Do nothing.
-        fn handle_disabled(keyboard: *const Self, layer_hold: LayerzActionDisabled, event: InputEvent) void {
-            _ = keyboard;
-            _ = layer_hold;
-            _ = event;
-        }
-
-        /// Do the action from the base layer instead.
-        /// If we are already on the base layer, just forward the input event.
-        fn handle_transparent(keyboard: *Self, transparent: LayerzActionTransparent, event: InputEvent) void {
-            _ = transparent;
-            const key_layer = keyboard.key_state[event.code];
-            if (key_layer == keyboard.base_layer) {
-                keyboard.writer(event);
-            } else {
-                const base_action = keyboard.layout[keyboard.base_layer][event.code];
-                switch (base_action) {
-                    // We need to handle transparent explicitly otherwise we create an infinite loop.
-                    .transparent => keyboard.writer(event),
-                    else => keyboard.handle_action(base_action, event),
-                }
-            }
-        }
-
-        fn handle_hook(keyboard: *Self, hook: LayerzActionHook, input: InputEvent) void {
-            _ = keyboard;
-            if (input.value != KEY_PRESS) return;
-
-            hook.f() catch |err| {
-                log.err("Custom hook {} failed with {}", .{ hook.f, err });
-                return;
-            };
-        }
-
-        fn handle_mouse_move(keyboard: *Self, mouse_move: LayerzActionMouseMove, input: InputEvent) void {
-            if (input.value == KEY_RELEASE) return;
-            var output = input;
-            output.type = linux.EV_REL;
-            output.code = mouse_move.key;
-            switch (mouse_move.key) {
-                linux.REL_X => {
-                    if (mouse_move.stepX != 0) {
-                        output.code = linux.REL_X;
-                        output.value = mouse_move.stepX;
-                        keyboard.writer(output);
-                    }
-                    if (mouse_move.stepY != 0) {
-                        output.code = linux.REL_Y;
-                        output.value = mouse_move.stepY;
-                        keyboard.writer(output);
-                    }
-                },
-                linux.REL_WHEEL, linux.REL_DIAL => {
-                    output.value = mouse_move.stepX;
-                    keyboard.writer(output);
-                },
-                linux.REL_HWHEEL => {
-                    output.value = mouse_move.stepY;
-                    keyboard.writer(output);
-                },
-                // Ideally this should be detected at compile time
-                else => {},
-            }
-        }
-
-        /// Read events from stdinput and handle them.
-        pub fn loop(keyboard: *Self) void {
-            while (keyboard.read_event(0)) |input| {
-                keyboard.handle(input);
-            }
-            log.debug("No more event, clearing the queue", .{});
-        }
-
-        pub fn writer(keyboard: *Self, event: InputEvent) void {
-            return keyboard.event_provider.write_event(event);
-        }
-
-        pub fn read_event(keyboard: *Self, timeout_ms: u32) ?InputEvent {
-            return keyboard.event_provider.read_event(timeout_ms);
-        }
-    };
-}
-
-fn delta_ms(event1: InputEvent, event2: InputEvent) i32 {
+pub fn delta_ms(event1: InputEvent, event2: InputEvent) i32 {
     var delta = 1000 * (event2.time.tv_sec - event1.time.tv_sec);
 
     var delta_us = event2.time.tv_usec - event1.time.tv_usec;
@@ -875,8 +591,8 @@ test "Layer Hold With Modifiers From Layer Below" {
 }
 
 test "Mouse Move" {
-    const m_up = LayerzAction{ .mouse_move = .{ .stepX = 10 } };
-    const m_down_right = LayerzAction{ .mouse_move = .{ .stepX = -10, .stepY = 10 } };
+    const m_up = Action{ .mouse_move = .{ .stepX = 10 } };
+    const m_down_right = Action{ .mouse_move = .{ .stepX = -10, .stepY = 10 } };
 
     var layer0 = PASSTHROUGH;
     map(&layer0, "W", m_up);
@@ -901,7 +617,7 @@ test "Mouse Move" {
 }
 
 /// Shortcut to create an InputEvent, using float for timestamp.
-fn input_event(event: u8, comptime keyname: []const u8, time: f64) InputEvent {
+pub fn input_event(event: u8, comptime keyname: []const u8, time: f64) InputEvent {
     return .{
         .type = linux.EV_KEY,
         .value = event,
@@ -964,10 +680,10 @@ test "delta_ms" {
 
 // Layout DSL: create a layer using the ANSI layout
 pub fn ansi(
-    number_row: [13]LayerzAction,
-    top_row: [14]LayerzAction,
-    middle_row: [13]LayerzAction,
-    bottom_row: [12]LayerzAction,
+    number_row: [13]Action,
+    top_row: [14]Action,
+    middle_row: [13]Action,
+    bottom_row: [12]Action,
 ) Layer {
     var layer = PASSTHROUGH;
     map(&layer, "GRAVE", number_row[0]);

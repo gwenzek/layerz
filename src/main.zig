@@ -4,17 +4,17 @@ const log = std.log;
 
 // Moves the mouse by 20mm increments.
 const m_step = 20;
-const m_up = l.LayerzAction{ .mouse_move = .{ .stepY = -m_step } };
-const m_down = l.LayerzAction{ .mouse_move = .{ .stepY = m_step } };
-const m_right = l.LayerzAction{ .mouse_move = .{ .stepX = m_step } };
-const m_left = l.LayerzAction{ .mouse_move = .{ .stepX = -m_step } };
+const m_up = l.Action{ .mouse_move = .{ .stepY = -m_step } };
+const m_down = l.Action{ .mouse_move = .{ .stepY = m_step } };
+const m_right = l.Action{ .mouse_move = .{ .stepX = m_step } };
+const m_left = l.Action{ .mouse_move = .{ .stepX = -m_step } };
 
 const k = l.k;
 const s = l.s;
 const __ = l.__;
 
-const reset_usb = l.LayerzAction{ .hook = .{ .f = resetUsbDevices } };
-const beep = l.LayerzAction{ .hook = .{ .f = makeBeep } };
+const reset_usb = l.Action{ .hook = .{ .f = resetUsbDevices } };
+const beep = l.Action{ .hook = .{ .f = makeBeep } };
 
 pub fn main() anyerror!void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
