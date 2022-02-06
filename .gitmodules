@@ -1,3 +1,6 @@
 [submodule "tigerbeetle-io"]
 	path = tigerbeetle-io
 	url = https://github.com/hnakamur/tigerbeetle-io.git
+[submodule "libevdev"]
+	path = libevdev
+	url = https://gitlab.freedesktop.org/libevdev/libevdev.git
