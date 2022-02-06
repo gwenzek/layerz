@@ -15,4 +15,7 @@ fi
 # zig build -Drelease-safe
 zig build
 
-sudo zig-out/bin/layerz | sudo uinput -d $KEEB
+# sudo uinput -d $KEEB -p > device.yaml
+# sudo zig-out/bin/layerz | sudo uinput -d $KEEB
+
+sudo zig-out/bin/layerz

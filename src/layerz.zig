@@ -6,6 +6,7 @@ const log = std.log.scoped(.layerz);
 pub const linux = @cImport({
     @cInclude("linux/input.h");
     @cInclude("libevdev.h");
+    @cInclude("libevdev-uinput.h");
 });
 
 const providers = @import("providers.zig");
