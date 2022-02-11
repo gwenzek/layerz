@@ -35,8 +35,14 @@ pub fn build(b: *std.build.Builder) void {
     // latency.setBuildMode(std.builtin.Mode.Debug);
     latency.install();
 
+    const all_tests = b.step("test", "Tests");
     const tests = b.addTest("src/layerz.zig");
     tests.linkLibC();
     tests.addIncludeDir("src/include");
-    b.step("test", "Tests").dependOn(&tests.step);
+    all_tests.dependOn(&tests.step);
+
+    // const scratch_tests = b.addTest("src/scratch.zig");
+    // scratch_tests.linkLibC();
+    // scratch_tests.addIncludeDir("src/include");
+    // all_tests.dependOn(&scratch_tests.step);
 }

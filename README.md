@@ -41,6 +41,9 @@ and the user experience need to be improved.
    If the keyboard is not behaving as you would like
    close the terminal with the mouse :-)
 
+**TODO** 
+Figure out how to launch this in a demon
+
 ## How to ?
 
 ### How to debug issues

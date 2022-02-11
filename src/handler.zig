@@ -62,12 +62,7 @@ pub fn KeyboardState(Provider: anytype) type {
         fn resolve_action(keyboard: *Self, input: InputEvent) Action {
             std.debug.assert(input.type == linux.EV_KEY);
             const key_layer = switch (input.value) {
-                layerz.KEY_REPEAT =>
-                // TODO: check if it's right to swallow repeats event
-                // linux console, X, wayland handles repeat
-                keyboard.layer,
-
-                layerz.KEY_PRESS => keyboard.layer,
+                layerz.KEY_REPEAT, layerz.KEY_PRESS => keyboard.layer,
                 layerz.KEY_RELEASE => keyboard.key_state[input.code],
                 else => {
                     log.warn("ignoring unkown event {}", .{input});

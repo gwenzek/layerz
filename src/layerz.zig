@@ -13,7 +13,7 @@ const providers = @import("providers.zig");
 const KeyboardState = @import("handler.zig").KeyboardState;
 
 pub var _start_time: i64 = -1;
-var _start_time_ns: i64 = 0;
+
 /// This is a port of linux input_event struct.
 /// Linux kernel has different way of storing the time depending on the architecture
 /// this isn't currently supported in Layerz code (notably in `delta_ms`)
@@ -105,8 +105,6 @@ pub const Action = union(ActionKind) {
     layer_toggle: LayerToggle,
     disabled: Disabled,
     transparent: Transparent,
-    /// Move the mouse or wheel. This doesn't seem to work on my keyboard.
-    /// Maybe the device need to be registered with mouse capabilities ?
     mouse_move: MouseMove,
     hook: Hook,
 
@@ -117,7 +115,13 @@ pub const Action = union(ActionKind) {
     pub const Disabled = struct {};
     pub const Transparent = struct {};
     pub const Hook = struct { f: fn () anyerror!void };
-    pub const MouseMove = struct { key: u8 = linux.REL_X, stepX: i16 = 0, stepY: i16 = 0 };
+    pub const MouseMove = struct {
+        key: u8 = linux.REL_X,
+        /// Moves the mouse right (in millimeters)
+        stepX: i16 = 0,
+        /// Moves the mouse down (in millimeters)
+        stepY: i16 = 0,
+    };
 };
 
 pub const NUM_KEYS = 256;
