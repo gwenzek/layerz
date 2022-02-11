@@ -1,14 +1,13 @@
 # LayerZ a Zig utility to control what your keyboard do
 
-This utility leverage [interception](https://gitlab.com/interception/linux/tools)
-a linux utility that intercept the key events from a specific input device.
+This utility intercepts the key events from a specific input device.
 LayerZ then allow you to rewrite those events on the fly 
 and change what the rest of the OS receives as input.
 
 I've got used to be able to program my mechanical keyboard
 for a few years now.
 And when I've to type on my laptop keyboard
-I also want to control exactly what happen
+I also want to control exactly what happens
 and I want to make some keys easier to reach.
 
 ## Get started
@@ -29,7 +28,7 @@ and the user experience need to be improved.
    See below for the reference of what you can do.
 
 3. [Install Zig with a package manager](https://github.com/ziglang/zig/wiki/Install-Zig-from-a-Package-Manager)
-   This code was written with Zig 0.8.0.
+   This code was written with Zig 0.9.0.
 
 4. Identify the name of the builting keyboard.
    Run `ls /dev/input/by-path/` to find the name of the usb devices plugged 
@@ -107,3 +106,16 @@ Features:
 **TODO**: make it easy to add a new hook
 
 **TODO**: generate Zig doc for the DSL
+
+## Alternatives
+
+I discovered those tools after I started myself,
+otherwise I would probably just have chose one of them, 
+but hey, maybe it will solve you some trouble:
+
+* https://github.com/ItayGarin/ktrl
+* https://github.com/kmonad/kmonad
+* https://github.com/thkala/evmapd
+* https://github.com/samvel1024/kbct
+* https://github.com/snyball/Hawck
+

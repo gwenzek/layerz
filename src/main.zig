@@ -29,19 +29,19 @@ pub fn main() anyerror!void {
     l.map(&layer, "LEFTALT", k("LEFTCTRL"));
     l.map(&layer, "CAPSLOCK", k("LEFTSHIFT"));
 
-    const mod_layer = l.ansi(
+    var mod_layer = l.ansi(
         .{ __, k("F1"), k("F2"), k("F3"), k("F4"), k("F5"), k("F6"), k("F7"), k("F8"), k("F9"), k("F10"), k("F11"), k("F12") },
         .{ __, k("1"), k("2"), k("3"), k("4"), k("5"), k("6"), k("7"), k("8"), k("9"), k("0"), k("BACKSLASH"), l.xx, reset_usb },
         .{ __, k("LEFTBRACE"), s("9"), s("0"), k("RIGHTBRACE"), k("SPACE"), k("BACKSPACE"), k("LEFT"), k("UP"), k("DOWN"), k("RIGHT"), s("APOSTROPHE"), __ },
         .{ __, s("EQUAL"), s("MINUS"), k("MINUS"), k("EQUAL"), s("GRAVE"), k("ESC"), k("HOME"), k("PAGEUP"), k("PAGEDOWN"), k("END"), __ },
     );
 
-    l.map(&layer, "UP", m_up);
-    l.map(&layer, "DOWN", m_down);
-    l.map(&layer, "RIGHT", m_right);
-    l.map(&layer, "LEFT", m_left);
+    l.map(&mod_layer, "UP", m_up);
+    l.map(&mod_layer, "DOWN", m_down);
+    l.map(&mod_layer, "RIGHT", m_right);
+    l.map(&mod_layer, "LEFT", m_left);
     // could "beep" be useful for multi key combos ?
-    l.map(&layer, "ESC", beep);
+    // l.map(&mod_layer, "ESC", beep);
 
     if (args.len < 2) {
         // TODO: use DeviceProvider or StdioProvider depending on the input args
