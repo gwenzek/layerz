@@ -66,6 +66,7 @@ const EAGAIN: c_int = 11;
 /// keep track of the keyboard state, but also it's more complicated logic.
 /// Also I'm not sure if this feature is very useful for keyboard input, are
 /// you continuing to write tonne of prose while your laptop is frozen ?
+/// And it's not really robust, because a key press/release can still be dropped altogether.
 // TODO: should we ship libevdev and compile it ourselves ?
 pub const EvdevProvider = struct {
     input: std.fs.File,
@@ -74,7 +75,7 @@ pub const EvdevProvider = struct {
     out: *c.libevdev_uinput,
 
     pub fn init(name: [:0]const u8) !EvdevProvider {
-        const file = try std.fs.openFileAbsoluteZ(name, .{ .read = true });
+        const file = try std.fs.openFileAbsoluteZ(name, .{ .mode = .read_only });
         var dev: ?*c.libevdev = undefined;
         var rc = c.libevdev_new_from_fd(file.handle, &dev);
         if (rc < 0 or dev == null) {
@@ -90,6 +91,11 @@ pub const EvdevProvider = struct {
             log.err("Device {s} is already owned by another process !", .{name});
             return error.SharingViolation;
         }
+        // Release and re-grab, this prevent accidentally disabling the trackpad.
+        // I don't understand why this help, but I'm not the only one with this issue
+        // https://github.com/ItayGarin/ktrl/blob/55f7697d34e96376cd327860bbb55450b2d11953/src/kbd_in.rs#L20
+        _ = c.libevdev_grab(dev, c.LIBEVDEV_UNGRAB);
+        _ = c.libevdev_grab(dev, c.LIBEVDEV_GRAB);
         log.debug("libedev reading from device at {s}", .{name});
 
         const out_dev = try allocOutputDevice(dev.?);
