@@ -58,7 +58,8 @@ pub fn main() anyerror!void {
 
 fn resetUsbDevices() !void {
     const hub = "/dev/bus/usb/001";
-    const devices = try std.fs.openDirAbsoluteZ(hub, .{ .iterate = true });
+    var devices = try std.fs.openIterableDirAbsolute(hub, .{ .access_sub_paths = true });
+    defer devices.close();
     var it = devices.iterate();
     while (try it.next()) |dev| {
         const id = try std.fmt.parseUnsigned(u8, dev.name, 10);
@@ -66,7 +67,7 @@ fn resetUsbDevices() !void {
         // Firsts ports are for built-in peripherals
         log.info("Reading/writing keyboard events from stdin/out", .{});
 
-        const dev_fs = try devices.openFile(dev.name, .{ .mode = .write_only });
+        const dev_fs = try devices.dir.openFile(dev.name, .{ .mode = .write_only });
         // Defined in linux kernel, in usbdevice_fs.h
         const USBDEVFS_RESET = std.os.linux.IOCTL.IO('U', 20);
         const rc = std.os.linux.ioctl(dev_fs.handle, USBDEVFS_RESET, 0);
