@@ -13,12 +13,13 @@ pub fn build(b: *std.build.Builder) void {
 
     const tigerbeetle = std.build.Pkg{
         .name = "tigerbeetle_io",
-        .path = .{ .path = "tigerbeetle-io/src/io.zig" },
+        .source = .{ .path = "tigerbeetle-io/src/io.zig" },
     };
 
     const exe = b.addExecutable("layerz", "src/main.zig");
     exe.linkLibC();
-    exe.addIncludeDir("src/include");
+    exe.addIncludePath("src/include");
+    // TODO: build libevdev from source
     exe.linkSystemLibraryName("evdev");
     exe.addPackage(tigerbeetle);
     exe.setTarget(target);
@@ -27,7 +28,7 @@ pub fn build(b: *std.build.Builder) void {
 
     const latency = b.addExecutable("latency", "src/latency.zig");
     latency.linkLibC();
-    latency.addIncludeDir("src/include");
+    latency.addIncludePath("src/include");
     latency.setTarget(target);
     // We want the latency measurement tool to be as fast as possible,
     // and to have it's performance constistent over runs.
@@ -38,11 +39,11 @@ pub fn build(b: *std.build.Builder) void {
     const all_tests = b.step("test", "Tests");
     const tests = b.addTest("src/layerz.zig");
     tests.linkLibC();
-    tests.addIncludeDir("src/include");
+    tests.addIncludePath("src/include");
     all_tests.dependOn(&tests.step);
 
     // const scratch_tests = b.addTest("src/scratch.zig");
     // scratch_tests.linkLibC();
-    // scratch_tests.addIncludeDir("src/include");
+    // scratch_tests.addIncludePath("src/include");
     // all_tests.dependOn(&scratch_tests.step);
 }
