@@ -44,12 +44,12 @@ pub fn main() anyerror!void {
     // l.map(&mod_layer, "ESC", beep);
 
     if (args.len < 2) {
-        // TODO: use DeviceProvider or StdioProvider depending on the input args
+        log.info("Reading/writing keyboard events from stdin/out", .{});
         var keyboard = l.stdioKeyboard(&[_]l.Layer{ layer, mod_layer });
         defer keyboard.deinit();
         keyboard.loop();
     } else {
-        log.info("Reading/writing keyboard events from stdin/out", .{});
+        log.info("Reading/writing keyboard events from {s}", .{args[1]});
         var keyboard = l.evdevKeyboard(&[_]l.Layer{ layer, mod_layer }, args[1]);
         defer keyboard.deinit();
         keyboard.loop();
@@ -66,7 +66,7 @@ fn resetUsbDevices() !void {
         // Firsts ports are for built-in peripherals
         log.info("Reading/writing keyboard events from stdin/out", .{});
 
-        const dev_fs = try devices.openFile(dev.name, .{ .mode = .write_only });
+        const dev_fs = try devices.openFile(dev.name, .{ .write = true });
         // Defined in linux kernel, in usbdevice_fs.h
         const USBDEVFS_RESET = std.os.linux.IOCTL.IO('U', 20);
         const rc = std.os.linux.ioctl(dev_fs.handle, USBDEVFS_RESET, 0);
@@ -80,6 +80,6 @@ pub fn makeBeep() !void {
     // Write a bell char to the tty.
     // Normally I should be able to use ioctl to write EV_SND to the device
     // but haven't managed to do so yet.
-    const console = std.fs.openFileAbsoluteZ("/dev/tty", .{ .mode = .write_only }) catch return;
+    const console = std.fs.openFileAbsoluteZ("/dev/tty", .{ .write = true }) catch return;
     _ = console.writer().writeByte(7) catch return;
 }
