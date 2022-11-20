@@ -6,36 +6,37 @@ const log = std.log.scoped(.device);
 
 pub const c = layerz.linux;
 
-pub const StdIoProvider = struct {
-    stdin: std.fs.File,
-    stdout: std.fs.File,
+pub const FileProvider = struct {
+    infile: std.fs.File,
+    outfile: std.fs.File,
 
-    pub fn init() StdIoProvider {
+    pub fn fromStdIO() FileProvider {
         return .{
-            .stdin = io.getStdIn(),
-            .stdout = io.getStdOut(),
+            .infile = io.getStdIn(),
+            .outfile = io.getStdOut(),
         };
     }
 
-    pub fn deinit(self: *StdIoProvider) void {
-        _ = self;
+    pub fn deinit(self: *FileProvider) void {
+        self.infile.close();
+        self.outfile.close();
     }
 
-    pub fn write_event(self: *StdIoProvider, event: InputEvent) void {
-        write_event_to_file(self.stdout, event);
+    pub fn write_event(self: *FileProvider, event: InputEvent) void {
+        write_event_to_file(self.outfile, event);
     }
 
-    pub fn read_event(self: *StdIoProvider, timeout_ms: u32) ?InputEvent {
+    pub fn read_event(self: *FileProvider, timeout_ms: u32) ?InputEvent {
         // TODO: handle timeout
         // TODO: use tigerbeetle_io to read using io_uring
         _ = timeout_ms;
         var input: InputEvent = undefined;
         const buffer = std.mem.asBytes(&input);
-        if (self.stdin.read(buffer)) |bytes_read| {
+        if (self.infile.read(buffer)) |bytes_read| {
             if (bytes_read == 0) return null;
             return input;
         } else |err| {
-            std.debug.panic("Couldn't read event from stdin: {}", .{err});
+            std.debug.panic("Couldn't read event from infile: {}", .{err});
         }
     }
 };
@@ -49,12 +50,12 @@ fn write_event_to_file(out: anytype, event: InputEvent) void {
     // }
     // TODO: use io uring ?
     // currently we need a syscall to write a single event
-    _ = out.write(buffer) catch std.debug.panic("Couldn't write event {s} to stdout", .{event});
+    _ = out.write(buffer) catch std.debug.panic("Couldn't write event {s} to outfile", .{event});
 }
 
 const EAGAIN: c_int = 11;
 
-/// Uses libevdev to read the keyboard events. Writes to stdout.
+/// Uses libevdev to read the keyboard events. Writes to outfile.
 /// https://www.freedesktop.org/wiki/Software/libevdev/
 /// evdev is doing the following for us:
 ///  - maintains the state of each key (pressed or released)
@@ -70,12 +71,12 @@ const EAGAIN: c_int = 11;
 // TODO: should we ship libevdev and compile it ourselves ?
 pub const EvdevProvider = struct {
     input: std.fs.File,
-    stdout: std.fs.File,
+    outfile: std.fs.File,
     device: *c.libevdev,
     out: *c.libevdev_uinput,
 
     pub fn init(name: [:0]const u8) !EvdevProvider {
-        const file = try std.fs.openFileAbsoluteZ(name, .{ .mode = .read_only });
+        const file = try std.fs.openFileAbsoluteZ(name, .{ .read = true });
         var dev: ?*c.libevdev = undefined;
         var rc = c.libevdev_new_from_fd(file.handle, &dev);
         if (rc < 0 or dev == null) {
@@ -94,15 +95,15 @@ pub const EvdevProvider = struct {
         // Release and re-grab, this prevent accidentally disabling the trackpad.
         // I don't understand why this help, but I'm not the only one with this issue
         // https://github.com/ItayGarin/ktrl/blob/55f7697d34e96376cd327860bbb55450b2d11953/src/kbd_in.rs#L20
-        _ = c.libevdev_grab(dev, c.LIBEVDEV_UNGRAB);
-        _ = c.libevdev_grab(dev, c.LIBEVDEV_GRAB);
+        // _ = c.libevdev_grab(dev, c.LIBEVDEV_UNGRAB);
+        // _ = c.libevdev_grab(dev, c.LIBEVDEV_GRAB);
         log.debug("libedev reading from device at {s}", .{name});
 
         const out_dev = try allocOutputDevice(dev.?);
         const self = EvdevProvider{
             .device = dev.?,
             .input = file,
-            .stdout = std.fs.File{ .handle = c.libevdev_uinput_get_fd(out_dev) },
+            .outfile = std.fs.File{ .handle = c.libevdev_uinput_get_fd(out_dev) },
             .out = out_dev,
         };
         return self;
@@ -112,17 +113,17 @@ pub const EvdevProvider = struct {
         _ = c.libevdev_grab(self.device, c.LIBEVDEV_UNGRAB);
         _ = c.libevdev_free(self.device);
         _ = c.libevdev_uinput_destroy(self.out);
-        // stdout will be closed by libevdev
+        // outfile will be closed by libevdev
         self.input.close();
     }
 
     pub fn write_event(self: *EvdevProvider, event: InputEvent) void {
-        write_event_to_file(self.stdout, event);
+        write_event_to_file(self.outfile, event);
         // var ev2 = event;
         // ev2.type = c.EV_SND;
         // ev2.code = c.SND_CLICK;
         // ev2.value = 0;
-        // write_event_to_file(self.stdout, ev2);
+        // write_event_to_file(self.outfile, ev2);
     }
 
     pub fn read_event(self: *EvdevProvider, timeout_ms: u32) ?InputEvent {

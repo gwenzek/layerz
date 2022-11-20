@@ -138,10 +138,14 @@ pub fn resolve(comptime keyname: []const u8) u8 {
 const _keynames = [_][]const u8{ "ESC", "TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "ENTER", "LCTRL", "A", "S", "D", "F", "G", "H" };
 const _first_key_index = @as(u16, resolve(_keynames[0]));
 
+threadlocal var _keyname_buffer = [_]u8{0} ** 4;
 pub fn resolveName(keycode: u16) []const u8 {
     if (keycode < _first_key_index) return "LOW";
     var offset = keycode - _first_key_index;
-    if (offset >= _keynames.len) return "HIGH";
+    if (offset >= _keynames.len) {
+        const chars = std.fmt.formatIntBuf(&_keyname_buffer, keycode, 10, .upper, .{});
+        return _keyname_buffer[0..chars];
+    }
     return _keynames[offset];
 }
 
@@ -297,9 +301,23 @@ pub fn evdevKeyboard(layout: []const Layer, name: [:0]const u8) KeyboardState(pr
     return keeb;
 }
 
-pub fn stdioKeyboard(layout: []const Layer) KeyboardState(providers.StdIoProvider) {
-    const provider = providers.StdIoProvider.init();
-    var keeb = KeyboardState(providers.StdIoProvider){
+pub fn stdioKeyboard(layout: []const Layer) KeyboardState(providers.FileProvider) {
+    const provider = providers.FileProvider.fromStdIO();
+    var keeb = KeyboardState(providers.FileProvider){
+        .layout = layout,
+        .event_provider = provider,
+    };
+    keeb.init();
+    return keeb;
+}
+
+pub fn fileKeyboard(
+    layout: []const Layer,
+    input: std.fs.File,
+    output: std.fs.File,
+) KeyboardState(providers.FileProvider) {
+    const provider = providers.FileProvider{ .infile = input, .outfile = output };
+    var keeb = KeyboardState(providers.FileProvider){
         .layout = layout,
         .event_provider = provider,
     };
@@ -666,6 +684,23 @@ test "input_event helper correctly converts micro seconds" {
         },
         input_event(KEY_PRESS, "Q", 123.457),
     );
+}
+
+test "init fileProvider" {
+    const scripts = try std.fs.cwd().openDir("scripts", .{});
+    _ = try scripts.createFile("sample10.keys.out", .{});
+    var keeb = fileKeyboard(
+        &[_]Layer{PASSTHROUGH},
+        try scripts.openFile("sample10.keys", .{}),
+        try scripts.openFile("sample10.keys.out", .{ .write = true }),
+    );
+    keeb.loop();
+    const in = try scripts.readFileAlloc(testing.allocator, "sample10.keys", 256 * 1024 * 1024);
+    defer testing.allocator.free(in);
+    const out = try scripts.readFileAlloc(testing.allocator, "sample10.keys.out", 256 * 1024 * 1024);
+    defer testing.allocator.free(out);
+    try testing.expectEqualSlices(u8, in, out[24..]);
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&sync_report), out[0..24]);
 }
 
 fn _input_delta_ms(t1: f64, t2: f64) i32 {

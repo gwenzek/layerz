@@ -5,7 +5,7 @@ const linux = layerz.linux;
 const Action = layerz.Action;
 const InputEvent = layerz.InputEvent;
 
-pub fn KeyboardState(Provider: anytype) type {
+pub fn KeyboardState(comptime Provider: anytype) type {
     return struct {
         layout: []const layerz.Layer,
         event_provider: Provider,
