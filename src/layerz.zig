@@ -114,7 +114,7 @@ pub const Action = union(ActionKind) {
     pub const LayerToggle = struct { layer: u8 };
     pub const Disabled = struct {};
     pub const Transparent = struct {};
-    pub const Hook = struct { f: fn () anyerror!void };
+    pub const Hook = struct { f: *const fn () anyerror!void };
     pub const MouseMove = struct {
         key: u8 = linux.REL_X,
         /// Moves the mouse right (in millimeters)
@@ -135,7 +135,7 @@ pub fn resolve(comptime keyname: []const u8) u8 {
     return @field(linux, fullname);
 }
 
-const _keynames = [_][]const u8{ "ESC", "TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "ENTER", "LCTRL", "A", "S", "D", "F", "G", "H" };
+const _keynames = [_][]const u8{ "RESERVED", "ESC", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "BSP", "TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "ENTER", "LEFTCTRL", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "", "LEFTSHIFT", "\\", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "RIGHTSHIFT", "KPASTERISK", "LEFTALT", "SPACE", "CAPSLOCK", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10" };
 const _first_key_index = @as(u16, resolve(_keynames[0]));
 
 threadlocal var _keyname_buffer = [_]u8{0} ** 4;
@@ -151,6 +151,7 @@ pub fn resolveName(keycode: u16) []const u8 {
 
 test "Resolve keyname" {
     try testing.expectEqual(linux.KEY_Q, resolve("Q"));
+    try testing.expectEqual(linux.KEY_Q, 16);
     try testing.expectEqual(linux.KEY_TAB, resolve("TAB"));
     try testing.expectEqual(linux.KEY_LEFTSHIFT, resolve("LEFTSHIFT"));
 }
@@ -692,14 +693,14 @@ test "init fileProvider" {
     var keeb = fileKeyboard(
         &[_]Layer{PASSTHROUGH},
         try scripts.openFile("sample10.keys", .{}),
-        try scripts.openFile("sample10.keys.out", .{ .write = true }),
+        try scripts.openFile("sample10.keys.out", .{ .mode = .write_only }),
     );
     keeb.loop();
     const in = try scripts.readFileAlloc(testing.allocator, "sample10.keys", 256 * 1024 * 1024);
     defer testing.allocator.free(in);
     const out = try scripts.readFileAlloc(testing.allocator, "sample10.keys.out", 256 * 1024 * 1024);
     defer testing.allocator.free(out);
-    try testing.expectEqualSlices(u8, in, out[24..]);
+    try testing.expectEqualSlices(u8, in, out[48..]);
     try std.testing.expectEqualSlices(u8, std.mem.asBytes(&sync_report), out[0..24]);
 }
 

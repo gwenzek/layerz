@@ -9,7 +9,7 @@ fn count_latency(n: i32) !void {
     var total_events: i32 = 0;
     var event: InputEvent = undefined;
     const buffer = std.mem.asBytes(&event);
-    while (std.io.getStdIn().read(buffer)) {
+    while (try std.io.getStdIn().read(buffer)) {
         // only look at key events.
         if (event.type != layerz.linux.EV_KEY) continue;
 
