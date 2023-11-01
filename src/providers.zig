@@ -151,7 +151,7 @@ pub const EvdevProvider = struct {
 
             // Kind of ugly, the main reason I'm creating my own struct is to have
             // nice formatting. Maybe there is a better way.
-            return @bitCast(InputEvent, input);
+            return @as(InputEvent, @bitCast(input));
         }
     }
 };

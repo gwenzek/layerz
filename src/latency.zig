@@ -9,7 +9,7 @@ fn count_latency(n: i32) !void {
     var total_events: i32 = 0;
     var event: InputEvent = undefined;
     const buffer = std.mem.asBytes(&event);
-    while (try std.io.getStdIn().read(buffer)) {
+    while (std.io.getStdIn().read(buffer)) |_| {
         // only look at key events.
         if (event.type != layerz.linux.EV_KEY) continue;
 
@@ -21,7 +21,7 @@ fn count_latency(n: i32) !void {
     } else |err| {
         std.debug.panic("Couldn't read event from stdin {}", .{err});
     }
-    var avg_latency = @intToFloat(f64, total_latency) / @intToFloat(f64, total_events) / std.time.ns_per_ms;
+    var avg_latency = @as(f64, @floatFromInt(total_latency)) / @as(f64, @floatFromInt(total_events)) / std.time.ns_per_ms;
     try std.fmt.format(stdout, "Recorded {} events. Avg latency = {d:.3} ms\n", .{ total_events, avg_latency });
 }
 
