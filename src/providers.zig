@@ -3,6 +3,7 @@ const io = std.io;
 const layerz = @import("layerz.zig");
 const InputEvent = layerz.InputEvent;
 const log = std.log.scoped(.device);
+const assert = std.debug.assert;
 
 pub const c = layerz.linux;
 
@@ -76,7 +77,7 @@ pub const EvdevProvider = struct {
     out: *c.libevdev_uinput,
 
     pub fn init(name: [:0]const u8) !EvdevProvider {
-        const file = try std.fs.openFileAbsoluteZ(name, .{ .read = true });
+        const file = try std.fs.openFileAbsoluteZ(name, .{ .mode = .read_only });
         var dev: ?*c.libevdev = undefined;
         var rc = c.libevdev_new_from_fd(file.handle, &dev);
         if (rc < 0 or dev == null) {
@@ -98,12 +99,14 @@ pub const EvdevProvider = struct {
         // _ = c.libevdev_grab(dev, c.LIBEVDEV_UNGRAB);
         // _ = c.libevdev_grab(dev, c.LIBEVDEV_GRAB);
         log.debug("libedev reading from device at {s}", .{name});
-
         const out_dev = try allocOutputDevice(dev.?);
+        const out_handle = c.libevdev_uinput_get_fd(out_dev);
+        log.debug("libedev writing to {}", .{out_handle});
+
         const self = EvdevProvider{
             .device = dev.?,
             .input = file,
-            .outfile = std.fs.File{ .handle = c.libevdev_uinput_get_fd(out_dev) },
+            .outfile = std.fs.File{ .handle = out_handle },
             .out = out_dev,
         };
         return self;
@@ -118,7 +121,8 @@ pub const EvdevProvider = struct {
     }
 
     pub fn write_event(self: *EvdevProvider, event: InputEvent) void {
-        write_event_to_file(self.outfile, event);
+        check(c.libevdev_uinput_write_event(self.out, event.type, event.code, event.value));
+        // write_event_to_file(self.outfile, event);
         // var ev2 = event;
         // ev2.type = c.EV_SND;
         // ev2.code = c.SND_CLICK;
@@ -147,7 +151,7 @@ pub const EvdevProvider = struct {
 
             // Kind of ugly, the main reason I'm creating my own struct is to have
             // nice formatting. Maybe there is a better way.
-            return @bitCast(InputEvent, input);
+            return @as(InputEvent, @bitCast(input));
         }
     }
 };
@@ -163,7 +167,7 @@ fn allocOutputDevice(input: *const c.libevdev) !*c.libevdev_uinput {
     copyAttr("id_product", input, output);
     copyAttr("id_vendor", input, output);
     copyAttr("id_bustype", input, output);
-    // copyAttr("driver_version", input, output);  // not read in uinput
+    // copyAttr("driver_version", input, output); // not read in uinput
 
     _ = c.libevdev_enable_property(output, c.INPUT_PROP_POINTER);
     // TODO: copy all props at once
@@ -210,26 +214,40 @@ fn enableEvents(
     input: *const c.libevdev,
     output: *c.libevdev,
 ) void {
+    check(c.libevdev_enable_event_type(output, c.EV_SYN));
+    check(c.libevdev_enable_event_type(output, c.EV_KEY));
+    check(c.libevdev_enable_event_type(output, c.EV_REL));
+    check(c.libevdev_enable_event_type(output, c.EV_ABS));
+    check(c.libevdev_enable_event_type(output, c.EV_MSC));
+    check(c.libevdev_enable_event_type(output, c.EV_SW));
+    check(c.libevdev_enable_event_type(output, c.EV_LED));
+    check(c.libevdev_enable_event_type(output, c.EV_SND));
+    check(c.libevdev_enable_event_type(output, c.EV_REP));
+
     var syn_code: c_uint = 0;
     while (syn_code <= c.SYN_DROPPED) : (syn_code += 1) {
-        _ = c.libevdev_enable_event_code(output, c.EV_SYN, syn_code, null);
+        check(c.libevdev_enable_event_code(output, c.EV_SYN, syn_code, null));
     }
 
     // TODO: directly set output.key_bits to 1, ... 1
     // This requires importing libevdev-int.h
     var key_code: c_uint = 0;
     while (key_code < c.KEY_MAX) : (key_code += 1) {
-        _ = c.libevdev_enable_event_code(output, c.EV_KEY, key_code, null);
+        check(c.libevdev_enable_event_code(output, c.EV_KEY, key_code, null));
     }
 
     var mouse_code: c_uint = 0;
     while (mouse_code < c.REL_MAX) : (mouse_code += 1) {
-        _ = c.libevdev_enable_event_code(output, c.EV_REL, mouse_code, null);
+        check(c.libevdev_enable_event_code(output, c.EV_REL, mouse_code, null));
     }
 
     var delay: c_int = undefined;
     var period: c_int = undefined;
-    _ = c.libevdev_get_repeat(input, &delay, &period);
-    _ = c.libevdev_enable_event_code(output, c.EV_REP, c.REP_DELAY, &delay);
-    _ = c.libevdev_enable_event_code(output, c.EV_REP, c.REP_PERIOD, &period);
+    check(c.libevdev_get_repeat(input, &delay, &period));
+    check(c.libevdev_enable_event_code(output, c.EV_REP, c.REP_DELAY, &delay));
+    check(c.libevdev_enable_event_code(output, c.EV_REP, c.REP_PERIOD, &period));
+}
+
+fn check(errno: c_int) void {
+    assert(errno == 0);
 }

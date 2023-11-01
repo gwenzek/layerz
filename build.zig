@@ -9,40 +9,45 @@ pub fn build(b: *std.build.Builder) void {
 
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const mode = b.standardOptimizeOption(.{});
 
-    const tigerbeetle = std.build.Pkg{
-        .name = "tigerbeetle_io",
-        .path = .{ .path = "tigerbeetle-io/src/io.zig" },
-    };
+    // const tigerbeetle = std.build.Pkg{
+    //     .name = "tigerbeetle_io",
+    //     .source = .{ .path = "tigerbeetle-io/src/io.zig" },
+    // };
 
-    const exe = b.addExecutable("layerz", "src/main.zig");
+    const exe = b.addExecutable( .{
+        .name = "layerz",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = mode,
+    });
     exe.linkLibC();
-    exe.addIncludeDir("src/include");
+    exe.addIncludePath(.{ .path = "src/include" });
+    // TODO: build libevdev from source
     exe.linkSystemLibraryName("evdev");
-    exe.addPackage(tigerbeetle);
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
-    exe.install();
+    // exe.addPackage(tigerbeetle);
+    b.installArtifact(exe);
 
-    const latency = b.addExecutable("latency", "src/latency.zig");
-    latency.linkLibC();
-    latency.addIncludeDir("src/include");
-    latency.setTarget(target);
-    // We want the latency measurement tool to be as fast as possible,
-    // and to have it's performance constistent over runs.
-    latency.setBuildMode(std.builtin.Mode.ReleaseFast);
-    // latency.setBuildMode(std.builtin.Mode.Debug);
-    latency.install();
+    const latency = b.addExecutable(.{
+        .name = "latency",
+        .root_source_file = .{ .path = "src/latency.zig" },
+        .target = target,
+        // We want the latency measurement tool to be as fast as possible,
+        // and to have it's performance constistent over runs.
+        .optimize = std.builtin.Mode.ReleaseFast,
+        .link_libc = true,
+    });
+    latency.addIncludePath(.{ .path = "src/include" });
+    b.installArtifact(latency);
 
     const all_tests = b.step("test", "Tests");
-    const tests = b.addTest("src/layerz.zig");
-    tests.linkLibC();
-    tests.addIncludeDir("src/include");
+    const tests = b.addTest(.{.root_source_file = .{ .path = "src/layerz.zig"}, .link_libc = true});
+    tests.addIncludePath(.{ .path = "src/include" });
     all_tests.dependOn(&tests.step);
 
     // const scratch_tests = b.addTest("src/scratch.zig");
     // scratch_tests.linkLibC();
-    // scratch_tests.addIncludeDir("src/include");
+    // scratch_tests.addIncludePath("src/include");
     // all_tests.dependOn(&scratch_tests.step);
 }
