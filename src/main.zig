@@ -51,6 +51,7 @@ pub fn main() anyerror!void {
     } else {
         log.info("Reading/writing keyboard events from {s}", .{args[1]});
         var keyboard = l.evdevKeyboard(&[_]l.Layer{ layer, mod_layer }, args[1]);
+        // keyboard.keystrokes_limit = 100;
         defer keyboard.deinit();
         keyboard.loop();
     }

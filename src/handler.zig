@@ -16,6 +16,8 @@ pub fn KeyboardState(comptime Provider: anytype) type {
         base_layer: u8 = 0,
         layer: u8 = 0,
         key_state: [layerz.NUM_KEYS]u8 = [_]u8{0} ** layerz.NUM_KEYS,
+        keystrokes: u32 = 0,
+        keystrokes_limit: u32 = 0,
 
         const Self = @This();
         pub const DelayedHandler = fn (
@@ -39,21 +41,21 @@ pub fn KeyboardState(comptime Provider: anytype) type {
             self.event_provider.deinit();
         }
 
-        pub fn handle(keyboard: *Self, input: InputEvent) void {
+        pub fn handle(self: *Self, input: InputEvent) void {
             if (input.type == linux.EV_MSC and input.code == linux.MSC_SCAN) {
-                keyboard.writer(input);
+                self.writer(input);
                 return;
             }
 
             // forward anything that is not a key event, including sync events
             if (input.type != linux.EV_KEY or input.code >= layerz.NUM_KEYS) {
-                keyboard.writer(input);
+                self.writer(input);
                 return;
             }
             log.debug("read {}", .{input});
 
-            const action = keyboard.resolve_action(input);
-            keyboard.handle_action(action, input);
+            const action = self.resolve_action(input);
+            self.handle_action(action, input);
         }
 
         /// Get the layer on which the event happened.
@@ -268,9 +270,12 @@ pub fn KeyboardState(comptime Provider: anytype) type {
         }
 
         /// Read events from stdinput and handle them.
-        pub fn loop(keyboard: *Self) void {
-            while (keyboard.read_event(0)) |input| {
-                keyboard.handle(input);
+        pub fn loop(self: *Self) void {
+            while (self.read_event(0)) |input| {
+                self.handle(input);
+                self.keystrokes += 1;
+                if (self.keystrokes_limit > 0 and self.keystrokes > self.keystrokes_limit)
+                    break;
             }
             log.debug("No more event, clearing the queue", .{});
         }

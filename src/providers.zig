@@ -156,35 +156,27 @@ pub const EvdevProvider = struct {
     }
 };
 
-fn allocOutputDevice(input: *const c.libevdev) !*c.libevdev_uinput {
-    const out = c.libevdev_new();
-    if (out == null) return error.OutOfMemory;
-    const output = out.?;
+fn allocOutputDevice(input: *c.libevdev) !*c.libevdev_uinput {
+    const ui_fd = try std.fs.openFileAbsoluteZ("/dev/uinput", .{ .mode = .read_write });
 
-    copyAttr("name", input, output);
-    copyAttr("phys", input, output);
-    copyAttr("uniq", input, output);
-    copyAttr("id_product", input, output);
-    copyAttr("id_vendor", input, output);
-    copyAttr("id_bustype", input, output);
-    // copyAttr("driver_version", input, output); // not read in uinput
+    var output: ?*c.libevdev_uinput = undefined;
 
-    _ = c.libevdev_enable_property(output, c.INPUT_PROP_POINTER);
-    // TODO: copy all props at once
-    copyProp(c.INPUT_PROP_DIRECT, input, output);
-    copyProp(c.INPUT_PROP_BUTTONPAD, input, output);
-    copyProp(c.INPUT_PROP_SEMI_MT, input, output);
-    copyProp(c.INPUT_PROP_TOPBUTTONPAD, input, output);
-    copyProp(c.INPUT_PROP_POINTING_STICK, input, output);
-    copyProp(c.INPUT_PROP_ACCELEROMETER, input, output);
+    var evdev_err = c.libevdev_uinput_create_from_device(input, ui_fd.handle, @as([*c]?*c.libevdev_uinput, &output));
+    if (evdev_err != 0) {
+      log.warn("Libevdev output device error {d}.", .{evdev_err});
+      return error.CreateDeviceError;
+    }
+    // TODO: this creates an exact copy of the input device.
+    // I'd love to augment a device, by eg adding mouse capabilities to a keyboard.
+    // Not sure how to do this.
 
-    enableEvents(input, output);
+    evdev_err = c.libevdev_grab(@ptrCast(input), c.LIBEVDEV_GRAB);
+    if (evdev_err != 0) {
+      log.warn("Libevdev grab error {d}", .{evdev_err});
+      return error.GrabDeviceError;
+    }
+    return output.?;
 
-    var uiout: ?*c.libevdev_uinput = undefined;
-    var rc = c.libevdev_uinput_create_from_device(output, c.LIBEVDEV_UINPUT_OPEN_MANAGED, &uiout);
-    if (rc < 0) return error.UinputError;
-
-    return uiout.?;
 }
 
 inline fn copyAttr(

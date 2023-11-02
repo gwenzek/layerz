@@ -45,6 +45,8 @@ pub fn build(b: *std.build.Builder) void {
     const tests = b.addTest(.{.root_source_file = .{ .path = "src/layerz.zig"}, .link_libc = true});
     tests.addIncludePath(.{ .path = "src/include" });
     all_tests.dependOn(&tests.step);
+    all_tests.dependOn(&exe.step);
+    all_tests.dependOn(&latency.step);
 
     // const scratch_tests = b.addTest("src/scratch.zig");
     // scratch_tests.linkLibC();
