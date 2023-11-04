@@ -41,10 +41,13 @@ pub fn build(b: *std.build.Builder) void {
     latency.addIncludePath(.{ .path = "src/include" });
     b.installArtifact(latency);
 
+    var test_filter = b.option([]const u8, "test-filter", "Filter for test");
     const all_tests = b.step("test", "Tests");
-    const tests = b.addTest(.{.root_source_file = .{ .path = "src/layerz.zig"}, .link_libc = true});
-    tests.addIncludePath(.{ .path = "src/include" });
-    all_tests.dependOn(&tests.step);
+    const layerz_tests = b.addTest(.{.root_source_file = .{ .path = "src/layerz.zig"}, .link_libc = true, .filter=test_filter});
+    layerz_tests.addIncludePath(.{ .path = "src/include" });
+    const run_layerz_tests = b.addRunArtifact(layerz_tests);
+
+    all_tests.dependOn(&run_layerz_tests.step);
     all_tests.dependOn(&exe.step);
     all_tests.dependOn(&latency.step);
 

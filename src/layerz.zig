@@ -701,7 +701,7 @@ test "init fileProvider" {
     const out = try scripts.readFileAlloc(testing.allocator, "sample10.keys.out", 256 * 1024 * 1024);
     defer testing.allocator.free(out);
     try testing.expectEqualSlices(u8, in, out[48..]);
-    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&sync_report), out[0..24]);
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&sync_report), out[24..48]);
 }
 
 fn _input_delta_ms(t1: f64, t2: f64) i32 {
