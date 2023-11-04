@@ -51,6 +51,14 @@ pub fn build(b: *std.build.Builder) void {
     all_tests.dependOn(&exe.step);
     all_tests.dependOn(&latency.step);
 
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = layerz_tests.getEmittedDocs(),
+        .install_dir = .prefix, // default build output prefix, ./zig-out
+        .install_subdir = "docs",
+    });
+    const docs_step = b.step("docs", "Generate API docs");
+    docs_step.dependOn(&install_docs.step);
+
     // const scratch_tests = b.addTest("src/scratch.zig");
     // scratch_tests.linkLibC();
     // scratch_tests.addIncludePath("src/include");
