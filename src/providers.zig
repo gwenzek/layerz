@@ -163,8 +163,8 @@ fn allocOutputDevice(input: *c.libevdev) !*c.libevdev_uinput {
 
     var evdev_err = c.libevdev_uinput_create_from_device(input, ui_fd.handle, @as([*c]?*c.libevdev_uinput, &output));
     if (evdev_err != 0) {
-      log.warn("Libevdev output device error {d}.", .{evdev_err});
-      return error.CreateDeviceError;
+        log.warn("Libevdev output device error {d}.", .{evdev_err});
+        return error.CreateDeviceError;
     }
     // TODO: this creates an exact copy of the input device.
     // I'd love to augment a device, by eg adding mouse capabilities to a keyboard.
@@ -172,11 +172,10 @@ fn allocOutputDevice(input: *c.libevdev) !*c.libevdev_uinput {
 
     evdev_err = c.libevdev_grab(@ptrCast(input), c.LIBEVDEV_GRAB);
     if (evdev_err != 0) {
-      log.warn("Libevdev grab error {d}", .{evdev_err});
-      return error.GrabDeviceError;
+        log.warn("Libevdev grab error {d}", .{evdev_err});
+        return error.GrabDeviceError;
     }
     return output.?;
-
 }
 
 inline fn copyAttr(

@@ -16,7 +16,7 @@ pub fn build(b: *std.build.Builder) void {
     //     .source = .{ .path = "tigerbeetle-io/src/io.zig" },
     // };
 
-    const exe = b.addExecutable( .{
+    const exe = b.addExecutable(.{
         .name = "layerz",
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
@@ -43,7 +43,7 @@ pub fn build(b: *std.build.Builder) void {
 
     var test_filter = b.option([]const u8, "test-filter", "Filter for test");
     const all_tests = b.step("test", "Tests");
-    const layerz_tests = b.addTest(.{.root_source_file = .{ .path = "src/layerz.zig"}, .link_libc = true, .filter=test_filter});
+    const layerz_tests = b.addTest(.{ .root_source_file = .{ .path = "src/layerz.zig" }, .link_libc = true, .filter = test_filter });
     layerz_tests.addIncludePath(.{ .path = "src/include" });
     const run_layerz_tests = b.addRunArtifact(layerz_tests);
 

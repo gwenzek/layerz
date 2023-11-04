@@ -11,8 +11,8 @@ jobs:
       - name: Install devbox
         uses: jetpack-io/devbox-install-action@v0.6.0
 
-      - name: Zig format
-        run: devbox run -- zig fmt
-
       - name: Run tests
         run: devbox run test
+
+      - name: Zig format
+        run: devbox run fmt_check
