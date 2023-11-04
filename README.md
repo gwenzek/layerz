@@ -28,7 +28,9 @@ and the user experience need to be improved.
    See below for the reference of what you can do.
 
 3. [Install Zig with a package manager](https://github.com/ziglang/zig/wiki/Install-Zig-from-a-Package-Manager)
-   This code was written with Zig 0.9.0.
+   This code was written with Zig 0.11.0.
+   Alternativelly you can use [devbox](https://www.jetpack.io/devbox/docs/) 
+   which is an easy to use package manager backed by Nix.
 
 4. Identify the name of the builting keyboard.
    Run `ls /dev/input/by-path/` to find the name of the usb devices plugged 
@@ -41,7 +43,7 @@ and the user experience need to be improved.
    close the terminal with the mouse :-)
 
 **TODO** 
-Figure out how to launch this in a demon
+Figure out how to launch this in a daemon
 
 ## How to ?
 
@@ -103,15 +105,13 @@ Features:
 **TODO**: mod hold
 **TODO**: add combos (map a combination of keys to another)
 **TODO**: add chord (map a succession of keys to another)
-**TODO**: make it easy to add a new hook
-
 **TODO**: generate Zig doc for the DSL
 
 ## Alternatives
 
 I discovered those tools after I started myself,
 otherwise I would probably just have chose one of them, 
-but hey, maybe it will solve you some trouble:
+but hey, maybe it will save you some trouble:
 
 * https://github.com/ItayGarin/ktrl
 * https://github.com/kmonad/kmonad
